@@ -147,7 +147,7 @@ def make_chart(ich: pd.DataFrame, w: int = 360, h: int = 180) -> str:
         if any(pd.isna(v) for v in [o_, c_, hh, ll]):
             continue
         x_  = bx(i)
-        col = "#26a69a" if c_ >= o_ else "#ef5350"
+        col = "#ef5350" if c_ >= o_ else "#26a69a"
         parts.append(f'<line x1="{x_:.1f}" y1="{py(hh):.1f}" x2="{x_:.1f}" y2="{py(ll):.1f}" stroke="{col}" stroke-width="0.8"/>')
         yt  = py(max(o_, c_))
         yb  = py(min(o_, c_))
