@@ -1,0 +1,39 @@
+{
+  "candidates": [
+    {"symbol": "7203.T", "name": "トヨタ自動車"},
+    {"symbol": "6758.T", "name": "ソニーグループ"},
+    {"symbol": "9984.T", "name": "ソフトバンクG"},
+    {"symbol": "6861.T", "name": "キーエンス"},
+    {"symbol": "8306.T", "name": "三菱UFJ"},
+    {"symbol": "7974.T", "name": "任天堂"},
+    {"symbol": "8035.T", "name": "東京エレクトロン"},
+    {"symbol": "4063.T", "name": "信越化学工業"},
+    {"symbol": "6367.T", "name": "ダイキン工業"},
+    {"symbol": "9433.T", "name": "KDDI"},
+    {"symbol": "6954.T", "name": "ファナック"},
+    {"symbol": "4519.T", "name": "中外製薬"},
+    {"symbol": "6902.T", "name": "デンソー"},
+    {"symbol": "9432.T", "name": "NTT"},
+    {"symbol": "2914.T", "name": "JT"}
+  ],
+  "indices": [
+    {"symbol": "^N225", "name": "日経225"},
+    {"symbol": "1306.T", "name": "TOPIX ETF"},
+    {"symbol": "2516.T", "name": "東証グロースETF"}
+  ],
+  "holdings": [
+    {
+      "symbol": "6730.T",
+      "name": "アクセル",
+      "cost": 1180,
+      "stop_loss": null
+    },
+    {
+      "symbol": "7012.T",
+      "name": "川崎重工業",
+      "cost": 3060,
+      "stop_loss": null
+    }
+  ],
+  "max_candidates": 10
+}
