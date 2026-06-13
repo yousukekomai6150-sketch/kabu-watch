@@ -37,5 +37,37 @@
     }
   ],
   "max_candidates": 10,
-  "max_price": 5000
+  "max_price": 5000,
+  "surge_candidates": [
+    {"symbol": "3778.T", "name": "さくらインターネット"},
+    {"symbol": "3923.T", "name": "ラクス"},
+    {"symbol": "3962.T", "name": "チェンジHD"},
+    {"symbol": "3967.T", "name": "エルテス"},
+    {"symbol": "3653.T", "name": "モルフォ"},
+    {"symbol": "3830.T", "name": "ギガプライズ"},
+    {"symbol": "4169.T", "name": "ENECHANGE"},
+    {"symbol": "4294.T", "name": "ソルクシーズ"},
+    {"symbol": "4295.T", "name": "フェイス"},
+    {"symbol": "4304.T", "name": "Eストアー"},
+    {"symbol": "4333.T", "name": "東洋システム"},
+    {"symbol": "4382.T", "name": "HEROZ"},
+    {"symbol": "4390.T", "name": "AI inside"},
+    {"symbol": "4440.T", "name": "ヴィッツ"},
+    {"symbol": "4441.T", "name": "トビラシステムズ"},
+    {"symbol": "4446.T", "name": "Link-U"},
+    {"symbol": "4449.T", "name": "ギフティ"},
+    {"symbol": "4477.T", "name": "BASE"},
+    {"symbol": "4478.T", "name": "フリー"},
+    {"symbol": "4488.T", "name": "AI CROSS"},
+    {"symbol": "4495.T", "name": "ROBOT PAYMENT"},
+    {"symbol": "4499.T", "name": "Speee"},
+    {"symbol": "2980.T", "name": "SREホールディングス"},
+    {"symbol": "6050.T", "name": "イー・ガーディアン"},
+    {"symbol": "6187.T", "name": "ライフネット生命"},
+    {"symbol": "7033.T", "name": "マネジメントソリューションズ"},
+    {"symbol": "7047.T", "name": "ポート"},
+    {"symbol": "7049.T", "name": "識学"},
+    {"symbol": "7342.T", "name": "ウェルスナビ"},
+    {"symbol": "4483.T", "name": "JMDC"}
+  ]
 }

@@ -12,6 +12,7 @@ import pytz
 import yfinance as yf
 import pandas as pd
 import requests
+import re
 
 JST = pytz.timezone("Asia/Tokyo")
 
@@ -189,6 +190,27 @@ def fetch_kabutan_news(symbol: str, max_items: int = 3) -> list:
         return items
     except Exception as e:
         print(f"[WARN] kabutan news {symbol}: {e}", file=sys.stderr)
+        return []
+
+
+def fetch_surge_from_kabutan(max_items: int = 60) -> list:
+    """kabutan.jp 値上がり率ランキングから .T シンボルリストを取得。失敗時は []。"""
+    url = "https://kabutan.jp/warning/?mode=2&market=0"
+    try:
+        resp = requests.get(url, timeout=15,
+                            headers={"User-Agent": "Mozilla/5.0 kabu-watch/1.0"})
+        resp.raise_for_status()
+        codes = re.findall(r'/stock/\?code=(\d{4})', resp.text)
+        seen, symbols = set(), []
+        for c in codes:
+            if c not in seen:
+                seen.add(c)
+                symbols.append(f"{c}.T")
+                if len(symbols) >= max_items:
+                    break
+        return symbols
+    except Exception as e:
+        print(f"[WARN] kabutan surge fetch: {e}", file=sys.stderr)
         return []
 
 
@@ -550,6 +572,13 @@ def fmt_price(p: float) -> str:
     return f"{p:,.0f}" if p >= 100 else f"{p:.2f}"
 
 
+def _market_cap_str(cap) -> str:
+    if cap is None:
+        return "不明"
+    oku = cap / 1e8
+    return f"{oku/10000:.1f}兆" if oku >= 10000 else f"{oku:.0f}億"
+
+
 def card(content: str) -> str:
     return f'<div style="background:#111122;border-radius:8px;padding:12px;margin-bottom:12px">{content}</div>'
 
@@ -771,6 +800,51 @@ def build_data(symbol: str, name: str) -> dict:
         return base
 
 
+# ── Surge screening data builder ─────────────────────────────────────────────
+
+def build_surge_data(symbol: str, name: str) -> dict | None:
+    """急騰スクリーニング用軽量ビルダー。フィルター不通過は None を返す。"""
+    try:
+        df = fetch_ohlcv(symbol, period="3mo")
+        if len(df) < 21:
+            return None
+
+        last = float(df["Close"].iloc[-1])
+        prev = float(df["Close"].iloc[-2]) if len(df) > 1 else last
+        pct  = (last / prev - 1) * 100 if prev else 0.0
+        vol_ratio, _ = calc_volume_signal(df)
+
+        # 価格・騰落率・出来高の早期フィルター
+        if last > 5000 or pct < 3.0 or vol_ratio is None or vol_ratio < 3.0:
+            return None
+
+        # フィルター通過後のみ時価総額を取得（API呼び出し節約）
+        market_cap = None
+        try:
+            info = yf.Ticker(symbol).info or {}
+            market_cap = info.get("marketCap")
+            # 名称を yfinance から補完（kabutan 由来でコードのみの場合）
+            if name == symbol.replace(".T", ""):
+                name = (info.get("longName") or info.get("shortName") or name)[:20]
+        except Exception:
+            pass
+
+        if market_cap is not None and market_cap > 50_000_000_000:
+            return None
+
+        rsi_v = calc_rsi(df["Close"])
+        return {
+            "symbol": symbol, "name": name,
+            "last": last, "pct": pct,
+            "vol_ratio": vol_ratio, "rsi": rsi_v,
+            "market_cap": market_cap,
+            "surge_score": vol_ratio * pct,
+        }
+    except Exception as e:
+        print(f"[WARN] surge {symbol}: {e}", file=sys.stderr)
+        return None
+
+
 # ── Card renderers ─────────────────────────────────────────────────────────────
 
 def _stats(d: dict) -> str:
@@ -957,6 +1031,27 @@ def render_candidate_card(d: dict) -> str:
     )
 
 
+def render_surge_card(d: dict) -> str:
+    pc  = _pct_color(d["pct"])
+    rsi = d.get("rsi", float("nan"))
+    rc  = ("#ef5350" if not pd.isna(rsi) and rsi >= 70
+           else "#26a69a" if not pd.isna(rsi) and rsi <= 30 else "#aaa")
+    rsi_str = f"{rsi:.1f}" if not pd.isna(rsi) else "—"
+    return card(
+        f'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px">'
+        f'<div><span style="font-weight:600;font-size:14px">{d["name"]}</span>'
+        f' <span style="font-size:11px;color:#666">{d["symbol"]}</span></div>'
+        f'<div style="text-align:right">'
+        f'<span style="font-size:16px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</span>'
+        f' <span style="font-size:13px;color:{pc}">+{d["pct"]:.2f}%</span></div></div>'
+        f'<div style="display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:#666">'
+        f'<span>出来高 <span style="color:#ffd600;font-weight:600">{d["vol_ratio"]:.1f}×</span></span>'
+        f'<span>RSI <span style="color:{rc}">{rsi_str}</span></span>'
+        f'<span>時価総額 <span style="color:#aaa">{_market_cap_str(d.get("market_cap"))}</span></span>'
+        f'</div>'
+    )
+
+
 # ── Main ────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -1001,6 +1096,27 @@ def main() -> None:
         cand_rows = [d for d in cand_rows if d["last"] is not None and d["last"] <= max_price]
     cand_rows.sort(key=lambda x: (-x["score"], -x["pct"]))
     top = cand_rows[:max_n]
+
+    # 急騰スクリーニング
+    surge_syms = fetch_surge_from_kabutan(max_items=60)
+    surge_cfg_list = cfg.get("surge_candidates", [])
+    if surge_syms:
+        name_map = {c["symbol"]: c["name"] for c in surge_cfg_list}
+        candidates_to_check = [
+            (sym, name_map.get(sym, sym.replace(".T", ""))) for sym in surge_syms
+        ]
+    else:
+        candidates_to_check = [(c["symbol"], c["name"]) for c in surge_cfg_list]
+    surge_rows = []
+    for sym, nm in candidates_to_check:
+        try:
+            d = build_surge_data(sym, nm)
+            if d is not None:
+                surge_rows.append(d)
+        except Exception as e:
+            print(f"[WARN] surge {sym}: {e}", file=sys.stderr)
+    surge_rows.sort(key=lambda x: -x["surge_score"])
+    top_surge = surge_rows[:5]
 
     # データ取得時刻: use the last date from any index row
     data_date_str = next((d["last_date_str"] for d in idx_rows if d.get("last_date_str")), "")
@@ -1048,6 +1164,11 @@ function sw(id,t){{
 <h2>スクリーナー TOP{len(top)}</h2>
 <div style="font-size:11px;color:#555;margin-bottom:8px">スコア = 雲抜け+三役好転+上昇トレンド+転換GC+出来高急増 (最大5)</div>
 {"".join(render_candidate_card(d) for d in top) or card('<div style="color:#888;text-align:center">候補銘柄なし</div>')}
+
+<h2>注目急騰5選</h2>
+<div style="background:#1a0505;border:1px solid #cc2200;border-radius:4px;padding:6px 10px;margin-bottom:8px;font-size:11px;color:#ff5533">⚠ 急騰銘柄は値動きが激しく高リスクです。必ず逆指値を設定してください</div>
+<div style="font-size:11px;color:#555;margin-bottom:8px">フィルター: 5,000円以下・当日+3%以上・出来高3倍以上・時価総額500億円以下 | スコア = 出来高倍率×騰落率</div>
+{"".join(render_surge_card(d) for d in top_surge) or card('<div style="color:#888;text-align:center">本日の急騰候補なし</div>')}
 
 <div style="text-align:center;font-size:10px;color:#333;padding:16px 0 8px">
   自動更新: 平日 16:30 JST | <a href="https://github.com/yousukekomai6150-sketch/kabu-watch" style="color:#444">GitHub</a>
