@@ -4,6 +4,7 @@
 import json
 import os
 import sys
+import html as html_lib
 from datetime import datetime
 import pytz
 import yfinance as yf
@@ -33,6 +34,15 @@ def fetch_5min(symbol: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def fetch_1min(symbol: str) -> pd.DataFrame:
+    try:
+        df = yf.Ticker(symbol).history(period="1d", interval="1m", auto_adjust=True)
+        return df.dropna(subset=["Close"])
+    except Exception as e:
+        print(f"[WARN] 1min {symbol}: {e}", file=sys.stderr)
+        return pd.DataFrame()
+
+
 # ── Ichimoku ───────────────────────────────────────────────────────────────────
 
 def ichimoku(df: pd.DataFrame) -> pd.DataFrame:
@@ -58,7 +68,7 @@ def calc_rsi(close: pd.Series, period: int = 14) -> float:
     avg_l = loss.ewm(com=period - 1, min_periods=period).mean()
     rs    = avg_g / avg_l
     rsi   = 100 - (100 / (1 + rs))
-    return float(rsi.iloc[-1]) if not rsi.empty else float("nan")
+    return float(rsi.iloc[-1]) if not rsi.dropna().empty else float("nan")
 
 
 def calc_macd(close: pd.Series, fast: int = 12, slow: int = 26, sig: int = 9) -> tuple:
@@ -73,7 +83,6 @@ def calc_macd(close: pd.Series, fast: int = 12, slow: int = 26, sig: int = 9) ->
 
 
 def calc_volume_signal(df: pd.DataFrame) -> tuple:
-    """Return (vol_ratio, is_surge). Surge = current vol >= 2× 20-day average."""
     if len(df) < 21 or "Volume" not in df.columns:
         return None, False
     avg20   = float(df["Volume"].iloc[-21:-1].mean())
@@ -129,6 +138,126 @@ def calc_signals(ich: pd.DataFrame, df: pd.DataFrame) -> tuple:
     return sum(sigs.values()), sigs
 
 
+# ── Analyst info ───────────────────────────────────────────────────────────────
+
+def _parse_news_item(item: dict) -> dict:
+    """Handle both old and new yfinance news formats."""
+    # New format: item["content"] dict
+    if "content" in item and isinstance(item["content"], dict):
+        c     = item["content"]
+        title = c.get("title", "")
+        link  = ((c.get("canonicalUrl") or {}).get("url")
+                 or (c.get("clickThroughUrl") or {}).get("url", ""))
+        pub   = c.get("pubDate", "")
+        if pub:
+            try:
+                dt  = datetime.fromisoformat(pub.replace("Z", "+00:00")).astimezone(JST)
+                pub = f"{dt.month}/{dt.day}"
+            except Exception:
+                pub = pub[:10]
+        return {"title": title, "link": link, "date": pub}
+    # Old format: flat dict
+    title = item.get("title", "")
+    link  = item.get("link", "")
+    ts    = item.get("providerPublishTime", 0)
+    pub   = ""
+    if ts:
+        try:
+            pub = datetime.fromtimestamp(int(ts), tz=JST).strftime("%-m/%-d")
+        except Exception:
+            pass
+    return {"title": title, "link": link, "date": pub}
+
+
+def fetch_analyst(symbol: str, current_price: float) -> dict:
+    """Return analyst target price, rating distribution, and news. Never raises."""
+    out: dict = {"target": None, "target_pct": None,
+                 "buy": None, "hold": None, "sell": None,
+                 "rec_key": None, "news": []}
+    try:
+        tk   = yf.Ticker(symbol)
+        info = {}
+        try:
+            info = tk.info or {}
+        except Exception:
+            pass
+
+        # Average target price
+        target = info.get("targetMeanPrice") or info.get("targetMedianPrice")
+        if target and current_price > 0:
+            out["target"]     = float(target)
+            out["target_pct"] = (float(target) / current_price - 1) * 100
+
+        out["rec_key"] = info.get("recommendationKey")
+
+        # Buy / Hold / Sell breakdown (period-based summary)
+        try:
+            recs = tk.recommendations
+            if recs is not None and not recs.empty:
+                # Columns may be: strongBuy, buy, hold, sell, strongSell
+                cols = recs.columns.str.lower()
+                row  = recs.iloc[0]
+                def _col(name: str) -> int:
+                    for c in recs.columns:
+                        if c.lower() == name:
+                            return int(row[c])
+                    return 0
+                buy  = _col("strongbuy") + _col("buy")
+                hold = _col("hold")
+                sell = _col("sell") + _col("strongsell")
+                if buy + hold + sell > 0:
+                    out["buy"], out["hold"], out["sell"] = buy, hold, sell
+        except Exception:
+            pass
+
+        # News (latest 3)
+        try:
+            for item in (tk.news or [])[:3]:
+                parsed = _parse_news_item(item)
+                if parsed.get("title"):
+                    out["news"].append(parsed)
+        except Exception:
+            pass
+
+    except Exception as e:
+        print(f"[WARN] analyst {symbol}: {e}", file=sys.stderr)
+
+    return out
+
+
+# ── Date/time helpers ──────────────────────────────────────────────────────────
+
+def _last_date_str(df: pd.DataFrame) -> str:
+    """Return 'M/D 15:30' string for the last bar in df (daily data closes at 15:30 JST)."""
+    if df.empty:
+        return ""
+    try:
+        ts = df.index[-1]
+        dt = ts.astimezone(JST) if hasattr(ts, "astimezone") else ts
+        return f"{dt.month}/{dt.day} 15:30"
+    except Exception:
+        return ""
+
+
+def _df_dates(df: pd.DataFrame, n: int) -> list:
+    """Return list of date objects (or None) for last n rows, in JST."""
+    try:
+        return [ts.astimezone(JST).date() for ts in df.iloc[-n:].index]
+    except Exception:
+        try:
+            return [ts.date() for ts in df.iloc[-n:].index]
+        except Exception:
+            return []
+
+
+def _df_timestamps_jst(df5: pd.DataFrame, n: int) -> list:
+    """Return list of JST datetime objects for last n rows of 5-min df."""
+    try:
+        return [ts.astimezone(JST) for ts in df5.iloc[-n:].index]
+    except Exception:
+        return []
+
+
 # ── SVG helpers ────────────────────────────────────────────────────────────────
 
 def _svg_open(w: int, h: int, rx: str = "4") -> str:
@@ -136,7 +265,6 @@ def _svg_open(w: int, h: int, rx: str = "4") -> str:
             f'style="width:100%;height:auto;display:block">'
             f'<rect width="{w}" height="{h}" fill="#0d0d1a" rx="{rx}"/>')
 
-# SBI色: 陽線=赤, 陰線=緑; 騰落率+/−も同規則
 def _candle_color(close: float, open_: float) -> str:
     return "#ef5350" if close >= open_ else "#26a69a"
 
@@ -144,16 +272,21 @@ def _pct_color(pct: float) -> str:
     return "#ef5350" if pct >= 0 else "#26a69a"
 
 
-# ── Price chart (日足 Ichimoku) ─────────────────────────────────────────────────
+# ── Price chart (日足 Ichimoku + X-axis date labels) ───────────────────────────
 
-def make_chart(ich: pd.DataFrame, w: int = 360, h: int = 180) -> str:
-    n = min(60, len(ich))
-    d = ich.iloc[-n:].reset_index(drop=True)
-    if len(d) < 3:
+def make_chart(ich: pd.DataFrame, w: int = 360, h: int = 190) -> str:
+    MAX_BARS = 60
+    n = min(MAX_BARS, len(ich))
+    if n < 3:
         return (_svg_open(w, h) +
                 f'<text x="50%" y="52%" fill="#555" text-anchor="middle" font-size="11">データなし</text></svg>')
 
-    PT, PB, PL, PR = 16, 4, 4, 4
+    # Extract JST dates before reset_index (for X-axis labels)
+    x_dates = _df_dates(ich, n)
+
+    d = ich.iloc[-n:].reset_index(drop=True)
+
+    PT, PB, PL, PR = 16, 16, 4, 4   # PB=16 for date labels
     cw, ch_ = w - PL - PR, h - PT - PB
 
     vals = []
@@ -171,7 +304,6 @@ def make_chart(ich: pd.DataFrame, w: int = 360, h: int = 180) -> str:
 
     slot = cw / n
     bw   = max(1.5, slot * 0.65)
-
     def bx(i: int) -> float:
         return PL + (i + 0.5) * slot
 
@@ -193,8 +325,8 @@ def make_chart(ich: pd.DataFrame, w: int = 360, h: int = 180) -> str:
         if not (pd.isna(d["span_a"].iloc[i]) or pd.isna(d["span_b"].iloc[i]))
     ]
     if len(cloud_pts) >= 2:
-        top_ = " ".join(f"{bx(i):.1f},{py(max(sa, sb)):.1f}" for i, sa, sb in cloud_pts)
-        bot_ = " ".join(f"{bx(i):.1f},{py(min(sa, sb)):.1f}" for i, sa, sb in reversed(cloud_pts))
+        top_ = " ".join(f"{bx(i):.1f},{py(max(sa,sb)):.1f}" for i, sa, sb in cloud_pts)
+        bot_ = " ".join(f"{bx(i):.1f},{py(min(sa,sb)):.1f}" for i, sa, sb in reversed(cloud_pts))
         bull = sum(1 for _, sa, sb in cloud_pts if sa >= sb)
         fill = "#1a3d2a" if bull >= len(cloud_pts) / 2 else "#3d1a1a"
         out += f'<polygon points="{top_} {bot_}" fill="{fill}" opacity="0.75"/>'
@@ -211,6 +343,7 @@ def make_chart(ich: pd.DataFrame, w: int = 360, h: int = 180) -> str:
     out += polyline_str("tenkan", "#4499ff", 1.2)
     out += polyline_str("kijun",  "#ff9944", 1.2)
 
+    # Candlesticks
     for i in range(n):
         row = d.iloc[i]
         o_, c_, hh, ll = row["open"], row["close"], row["high"], row["low"]
@@ -225,6 +358,24 @@ def make_chart(ich: pd.DataFrame, w: int = 360, h: int = 180) -> str:
                 f'<rect x="{x_ - bw/2:.1f}" y="{yt:.1f}" width="{bw:.1f}" '
                 f'height="{max(1.0, yb - yt):.1f}" fill="{col}"/>')
 
+    # X-axis date labels: first bar of each ISO week (≈週1本), always include first/last
+    if x_dates:
+        label_idxs = {0, min(n - 1, len(x_dates) - 1)}
+        for i in range(1, min(n, len(x_dates))):
+            if x_dates[i].isocalendar()[1] != x_dates[i - 1].isocalendar()[1]:
+                label_idxs.add(i)
+        last_lx = -999.0
+        for i in sorted(label_idxs):
+            if i >= len(x_dates):
+                continue
+            x_ = bx(i)
+            if x_ - last_lx < 30:   # skip if too close (handles dense edge cases)
+                continue
+            dt = x_dates[i]
+            out += (f'<text x="{x_:.1f}" y="{h - 3}" fill="#ccd6e0" font-size="8" '
+                    f'font-family="monospace" text-anchor="middle">{dt.month}/{dt.day}</text>')
+            last_lx = x_
+
     return out + "</svg>"
 
 
@@ -233,7 +384,7 @@ def make_chart(ich: pd.DataFrame, w: int = 360, h: int = 180) -> str:
 def make_volume_chart(df: pd.DataFrame, w: int = 360, h: int = 55, max_bars: int = 60) -> str:
     if "Volume" not in df.columns or len(df) < 3:
         return ""
-    avg20_val = float(df["Volume"].iloc[-21:-1].mean()) if len(df) >= 21 else float(df["Volume"].mean())
+    avg20 = float(df["Volume"].iloc[-21:-1].mean()) if len(df) >= 21 else float(df["Volume"].mean())
 
     n = min(max_bars, len(df))
     d = df.iloc[-n:].reset_index(drop=True)
@@ -246,14 +397,11 @@ def make_volume_chart(df: pd.DataFrame, w: int = 360, h: int = 55, max_bars: int
     cw, ch_ = w - PL - PR, h - PT - PB
     slot = cw / n
     bw   = max(1.5, slot * 0.65)
-
     def bx(i: int) -> float: return PL + (i + 0.5) * slot
 
     out = _svg_open(w, h, rx="0")
-
-    # 20-bar average dashed line
-    if avg20_val > 0 and avg20_val <= vmax:
-        ay = PT + ch_ * (1 - avg20_val / vmax)
+    if avg20 > 0 and avg20 <= vmax:
+        ay = PT + ch_ * (1 - avg20 / vmax)
         out += (f'<line x1="{PL}" y1="{ay:.1f}" x2="{w-PR}" y2="{ay:.1f}" '
                 f'stroke="#555" stroke-width="0.8" stroke-dasharray="3,2"/>')
 
@@ -265,8 +413,8 @@ def make_volume_chart(df: pd.DataFrame, w: int = 360, h: int = 55, max_bars: int
         bh_  = ch_ * v / vmax
         by_  = PT + ch_ - bh_
         col  = _candle_color(float(d["Close"].iloc[i]), float(d["Open"].iloc[i]))
-        if avg20_val > 0 and v >= avg20_val * 2:
-            col = "#ffd600"  # 出来高急増: 黄色強調
+        if avg20 > 0 and v >= avg20 * 2:
+            col = "#ffd600"
         out += (f'<rect x="{bx(i)-bw/2:.1f}" y="{by_:.1f}" width="{bw:.1f}" '
                 f'height="{max(1.0, bh_):.1f}" fill="{col}" opacity="0.85"/>')
 
@@ -276,35 +424,32 @@ def make_volume_chart(df: pd.DataFrame, w: int = 360, h: int = 55, max_bars: int
     return out + "</svg>"
 
 
-# ── 5-minute candlestick chart ─────────────────────────────────────────────────
+# ── 5-minute chart (ローソク足 + X-axis time labels) ─────────────────────────
 
-def make_5min_chart(df5: pd.DataFrame, w: int = 360, h: int = 180) -> str:
-    MAX_BARS = 160
-    n = min(MAX_BARS, len(df5))
+def make_intraday_chart(df5: pd.DataFrame, max_bars: int = 160,
+                        interval_label: str = "5分足", w: int = 360, h: int = 190) -> str:
+    n = min(max_bars, len(df5))
     if n < 3:
         return (_svg_open(w, h) +
                 '<text x="50%" y="52%" fill="#555" text-anchor="middle" font-size="11">データなし</text></svg>')
 
-    slice_ = df5.iloc[-n:]
-    # Identify day boundary indices before reset
+    slice_     = df5.iloc[-n:]
+    x_times    = _df_timestamps_jst(df5, n)   # JST datetimes
     day_boundaries: set = set()
-    try:
-        dates = [ts.date() for ts in slice_.index]
-        for i in range(1, len(dates)):
-            if dates[i] != dates[i - 1]:
+    if x_times:
+        for i in range(1, len(x_times)):
+            if x_times[i].date() != x_times[i - 1].date():
                 day_boundaries.add(i)
-    except Exception:
-        pass
+
     d = slice_.reset_index(drop=True)
 
-    PT, PB, PL, PR = 16, 4, 4, 4
+    PT, PB, PL, PR = 16, 16, 4, 4   # PB=16 for time labels
     cw, ch_ = w - PL - PR, h - PT - PB
     pmin = float(d["Low"].min()) * 0.999
     pmax = float(d["High"].max()) * 1.001
     prng = pmax - pmin or 1
 
     def py(p: float) -> float: return PT + ch_ * (1 - (p - pmin) / prng)
-
     slot = cw / n
     bw   = max(0.8, slot * 0.7)
     def bx(i: int) -> float: return PL + (i + 0.5) * slot
@@ -317,16 +462,17 @@ def make_5min_chart(df5: pd.DataFrame, w: int = 360, h: int = 180) -> str:
 
     out = _svg_open(w, h)
     out += (f'<text x="{PL}" y="11" fill="#aaa" font-size="9" font-family="monospace">{lbl}</text>'
-            f'<text x="{w//2}" y="11" fill="#444" font-size="8" font-family="monospace" text-anchor="middle">5分足</text>'
+            f'<text x="{w//2}" y="11" fill="#444" font-size="8" font-family="monospace" text-anchor="middle">{interval_label}</text>'
             f'<text x="{w-PR}" y="11" fill="{pc}" font-size="9" font-family="monospace" text-anchor="end">'
             f'{"+" if pct >= 0 else ""}{pct:.2f}%</text>')
 
     # Day separator lines
     for i in day_boundaries:
         if 0 < i < n:
-            x_ = bx(i) - slot / 2
-            out += f'<line x1="{x_:.1f}" y1="{PT}" x2="{x_:.1f}" y2="{h-PB}" stroke="#2a2a44" stroke-width="1"/>'
+            xsep = bx(i) - slot / 2
+            out += f'<line x1="{xsep:.1f}" y1="{PT}" x2="{xsep:.1f}" y2="{h-PB}" stroke="#2a2a44" stroke-width="1"/>'
 
+    # Candlesticks
     for i in range(n):
         row = d.iloc[i]
         o_, c_, hh, ll = row["Open"], row["Close"], row["High"], row["Low"]
@@ -340,6 +486,24 @@ def make_5min_chart(df5: pd.DataFrame, w: int = 360, h: int = 180) -> str:
                 f'stroke="{col}" stroke-width="0.5"/>'
                 f'<rect x="{x_-bw/2:.1f}" y="{yt:.1f}" width="{bw:.1f}" '
                 f'height="{max(0.8, yb - yt):.1f}" fill="{col}"/>')
+
+    # X-axis time labels: 30分刻み (9:00, 9:30, 10:00...) within TSE trading hours
+    # min_spacing=25px → 2日表示では自動的に1時間刻みに間引かれる
+    if x_times:
+        last_lx = -999.0
+        for i, ts in enumerate(x_times):
+            is_boundary = i in day_boundaries
+            is_30min    = ts.minute in (0, 30) and 9 <= ts.hour <= 15
+            if not (is_boundary or is_30min):
+                continue
+            x_ = bx(i)
+            if x_ - last_lx < 25:
+                continue
+            lbl_t = (f"{ts.month}/{ts.day}" if is_boundary
+                     else f"{ts.hour}:{ts.minute:02d}")
+            out += (f'<text x="{x_:.1f}" y="{h - 3}" fill="#ccd6e0" font-size="8" '
+                    f'font-family="monospace" text-anchor="middle">{lbl_t}</text>')
+            last_lx = x_
 
     return out + "</svg>"
 
@@ -377,18 +541,24 @@ def safe_id(symbol: str) -> str:
     return symbol.replace(".", "_").replace("^", "X")
 
 
-def chart_toggle(sym: str, day_price: str, day_vol: str, m5_price: str, m5_vol: str) -> str:
-    sid     = safe_id(sym)
-    has_m5  = bool(m5_price)
-    tab_btn = ('<button id="b5_{s}" onclick="sw(\'{s}\',\'m\')\" class="tab">5分足</button>'
-               .format(s=sid) if has_m5 else "")
-    m5_div  = (f'<div id="c5_{sid}" style="display:none">{m5_price}{m5_vol}</div>'
-               if has_m5 else "")
-    return (f'<div style="display:flex;gap:4px;margin-bottom:6px">'
-            f'<button id="bd_{sid}" onclick="sw(\'{sid}\',\'d\')" class="tab active">日足</button>'
-            f'{tab_btn}</div>'
-            f'<div id="cd_{sid}">{day_price}{day_vol}</div>'
-            f'{m5_div}')
+def chart_toggle(sym: str, day_price: str, day_vol: str,
+                 m5_price: str, m5_vol: str,
+                 m1_price: str = "", m1_vol: str = "") -> str:
+    sid    = safe_id(sym)
+    has_m5 = bool(m5_price)
+    has_m1 = bool(m1_price)
+    tabs   = (f'<button id="bd_{sid}" onclick="sw(\'{sid}\',\'d\')" class="tab active">日足</button>')
+    if has_m5:
+        tabs += f'<button id="b5_{sid}" onclick="sw(\'{sid}\',\'m\')" class="tab">5分足</button>'
+    if has_m1:
+        tabs += f'<button id="b1_{sid}" onclick="sw(\'{sid}\',\'1\')" class="tab">1分足</button>'
+    divs   = f'<div id="cd_{sid}">{day_price}{day_vol}</div>'
+    if has_m5:
+        divs  += f'<div id="c5_{sid}" style="display:none">{m5_price}{m5_vol}</div>'
+    if has_m1:
+        divs  += f'<div id="c1_{sid}" style="display:none">{m1_price}{m1_vol}</div>'
+    return (f'<div style="display:flex;gap:4px;margin-bottom:6px">{tabs}</div>'
+            + divs)
 
 
 def stats_row(rsi: float, macd_v: float, macd_s: float, macd_h: float,
@@ -396,7 +566,7 @@ def stats_row(rsi: float, macd_v: float, macd_s: float, macd_h: float,
     parts = []
 
     if not pd.isna(rsi):
-        rc = "#ef5350" if rsi >= 70 else "#26a69a" if rsi <= 30 else "#aaa"
+        rc   = "#ef5350" if rsi >= 70 else "#26a69a" if rsi <= 30 else "#aaa"
         note = (" <span style='color:#ef5350;font-size:10px'>過熱</span>" if rsi >= 70
                 else " <span style='color:#26a69a;font-size:10px'>売られすぎ</span>" if rsi <= 30 else "")
         parts.append(f'<span>RSI <span style="color:{rc}">{rsi:.1f}</span>{note}</span>')
@@ -423,6 +593,69 @@ def stats_row(rsi: float, macd_v: float, macd_s: float, macd_h: float,
             + " ".join(parts) + "</div>")
 
 
+def render_analyst_section(analyst: dict) -> str:
+    """Render analyst target price, rating distribution, and news."""
+    parts = []
+
+    # Target price
+    if analyst.get("target") is not None and analyst.get("target_pct") is not None:
+        tp   = analyst["target"]
+        tpct = analyst["target_pct"]
+        tc   = _pct_color(tpct)
+        sign = "+" if tpct >= 0 else ""
+        parts.append(
+            f'<div style="font-size:11px;margin-bottom:4px">'
+            f'目標株価 <span style="color:#ffd600">{fmt_price(tp)}</span>'
+            f' <span style="color:{tc}">({sign}{tpct:.1f}%)</span></div>'
+        )
+
+    # Buy / Hold / Sell distribution
+    buy, hold, sell = analyst.get("buy"), analyst.get("hold"), analyst.get("sell")
+    if buy is not None or hold is not None or sell is not None:
+        total = (buy or 0) + (hold or 0) + (sell or 0)
+        if total > 0:
+            parts.append(
+                f'<div style="display:flex;gap:10px;font-size:11px;margin-bottom:4px">'
+                f'<span style="color:#ef5350">▲Buy {buy or 0}</span>'
+                f'<span style="color:#888">━Hold {hold or 0}</span>'
+                f'<span style="color:#26a69a">▼Sell {sell or 0}</span>'
+                f'</div>'
+            )
+    elif analyst.get("rec_key"):
+        rec_map = {
+            "strong_buy": ("Strong Buy", "#ef5350"), "buy": ("Buy", "#ef5350"),
+            "hold": ("Hold", "#888"),
+            "sell": ("Sell", "#26a69a"), "strong_sell": ("Strong Sell", "#26a69a"),
+        }
+        rl, rc = rec_map.get(analyst["rec_key"], (analyst["rec_key"], "#888"))
+        parts.append(f'<div style="font-size:11px;margin-bottom:4px">'
+                     f'コンセンサス <span style="color:{rc}">{rl}</span></div>')
+
+    # News
+    news_items = analyst.get("news", [])
+    if news_items:
+        news_html = ""
+        for item in news_items:
+            raw_title = item.get("title", "")
+            title     = html_lib.escape(raw_title[:55] + ("…" if len(raw_title) > 55 else ""))
+            link      = html_lib.escape(item.get("link", "#"))
+            date      = html_lib.escape(item.get("date", ""))
+            date_span = f' <span style="color:#555;font-size:10px">{date}</span>' if date else ""
+            news_html += (
+                f'<div style="margin-bottom:3px;line-height:1.3">'
+                f'<a href="{link}" target="_blank" rel="noopener noreferrer" '
+                f'style="color:#7c83ff;text-decoration:none;font-size:11px">{title}</a>'
+                f'{date_span}</div>'
+            )
+        parts.append(f'<div style="margin-top:2px">{news_html}</div>')
+
+    if not parts:
+        return '<div style="font-size:11px;color:#555;margin-top:6px;padding-top:6px;border-top:1px solid #1a1a3a">評価データなし</div>'
+
+    return ('<div style="border-top:1px solid #1a1a3a;margin-top:8px;padding-top:8px">'
+            + "".join(parts) + "</div>")
+
+
 # ── LINE ───────────────────────────────────────────────────────────────────────
 
 def send_line(token: str, user_id: str, message: str) -> None:
@@ -444,9 +677,11 @@ def send_line(token: str, user_id: str, message: str) -> None:
 def build_data(symbol: str, name: str) -> dict:
     df  = fetch_ohlcv(symbol, period="1y")
     df5 = fetch_5min(symbol)
+    df1 = fetch_1min(symbol)
 
     base: dict = {"symbol": symbol, "name": name, "error": True,
-                  "last": None, "pct": 0.0, "score": 0, "sigs": {}}
+                  "last": None, "pct": 0.0, "score": 0, "sigs": {},
+                  "last_date_str": "", "analyst": {"news": []}}
     if len(df) < 55:
         return base
 
@@ -459,19 +694,25 @@ def build_data(symbol: str, name: str) -> dict:
     last             = float(df["Close"].iloc[-1])
     prev             = float(df["Close"].iloc[-2]) if len(df) > 1 else last
     pct              = (last / prev - 1) * 100 if prev else 0.0
+    last_date_str    = _last_date_str(df)
+    analyst          = fetch_analyst(symbol, last)
 
     day_price = make_chart(ich)
     day_vol   = make_volume_chart(df, max_bars=60)
-    m5_price  = make_5min_chart(df5) if len(df5) >= 5 else ""
+    m5_price  = make_intraday_chart(df5, max_bars=160, interval_label="5分足") if len(df5) >= 5 else ""
     m5_vol    = make_volume_chart(df5, max_bars=160) if len(df5) >= 5 else ""
+    m1_price  = make_intraday_chart(df1, max_bars=200, interval_label="1分足") if len(df1) >= 5 else ""
+    m1_vol    = make_volume_chart(df1, max_bars=200) if len(df1) >= 5 else ""
 
     return {
         "symbol": symbol, "name": name, "error": False,
         "last": last, "pct": pct, "score": score, "sigs": sigs,
         "rsi": rsi_v, "macd_v": macd_v, "macd_s": macd_s, "macd_h": macd_h,
         "vol_ratio": vol_ratio, "drawdown": drawdown,
+        "last_date_str": last_date_str, "analyst": analyst,
         "day_price": day_price, "day_vol": day_vol,
         "m5_price": m5_price, "m5_vol": m5_vol,
+        "m1_price": m1_price, "m1_vol": m1_vol,
     }
 
 
@@ -486,22 +727,29 @@ def _stats(d: dict) -> str:
 def _toggle(d: dict) -> str:
     return chart_toggle(d["symbol"],
                         d.get("day_price", ""), d.get("day_vol", ""),
-                        d.get("m5_price", ""),  d.get("m5_vol", ""))
+                        d.get("m5_price", ""),  d.get("m5_vol", ""),
+                        d.get("m1_price", ""),  d.get("m1_vol", ""))
+
+
+def _data_ts(d: dict) -> str:
+    ds = d.get("last_date_str", "")
+    return f'<span style="font-size:10px;color:#555">{ds}時点</span>' if ds else ""
 
 
 def render_index_card(d: dict) -> str:
     if d.get("error") or d["last"] is None:
         return card(f'<div style="color:#888">{d["name"]} — データ取得失敗</div>')
-    pc  = _pct_color(d["pct"])
-    ps  = "+" if d["pct"] >= 0 else ""
+    pc = _pct_color(d["pct"])
+    ps = "+" if d["pct"] >= 0 else ""
     return card(
         f'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">'
         f'<span style="font-weight:600;font-size:14px">{d["name"]}</span>'
-        f'<span style="font-size:11px;color:#666">{d["symbol"]}</span></div>'
+        f'<div style="text-align:right"><span style="font-size:11px;color:#666">{d["symbol"]}</span><br>'
+        f'{_data_ts(d)}</div></div>'
         f'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">'
         f'<span style="font-size:20px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</span>'
         f'<span style="font-size:14px;color:{pc}">{ps}{d["pct"]:.2f}%</span></div>'
-        + _stats(d) + _toggle(d)
+        + _stats(d) + _toggle(d) + render_analyst_section(d.get("analyst", {}))
     )
 
 
@@ -518,7 +766,8 @@ def render_holding_card(d: dict) -> str:
     return card(
         f'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">'
         f'<span style="font-weight:600;font-size:14px">{d["name"]}</span>'
-        f'<span style="font-size:11px;color:#666">{d["symbol"]}</span></div>'
+        f'<div style="text-align:right"><span style="font-size:11px;color:#666">{d["symbol"]}</span><br>'
+        f'{_data_ts(d)}</div></div>'
         f'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">'
         f'<span style="font-size:18px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</span>'
         f'<span style="font-size:14px;color:{pc}">{ps}{pnl:.2f}%</span></div>'
@@ -527,7 +776,7 @@ def render_holding_card(d: dict) -> str:
         + (f' | 逆指値 {fmt_price(d["stop_loss"])} 円' if d.get("stop_loss") else "")
         + f'</div>'
         + (f'<div style="margin-bottom:6px">{signal_badges(d["sigs"])}</div>' if d.get("sigs") else "")
-        + _stats(d) + _toggle(d) + warn
+        + _stats(d) + _toggle(d) + warn + render_analyst_section(d.get("analyst", {}))
     )
 
 
@@ -542,12 +791,14 @@ def render_candidate_card(d: dict) -> str:
         f'<span style="background:{sc};color:#fff;border-radius:4px;padding:2px 7px;'
         f'font-size:13px;font-weight:700;min-width:22px;text-align:center">{d["score"]}</span>'
         f'<div><div style="font-weight:600;font-size:14px">{d["name"]}</div>'
-        f'<div style="font-size:11px;color:#666">{d["symbol"]}</div></div></div>'
+        f'<div style="display:flex;gap:6px;align-items:center">'
+        f'<span style="font-size:11px;color:#666">{d["symbol"]}</span>'
+        f'{_data_ts(d)}</div></div></div>'
         f'<div style="text-align:right">'
         f'<div style="font-size:16px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</div>'
         f'<div style="font-size:12px;color:{pc}">{ps}{d["pct"]:.2f}%</div></div></div>'
         f'<div style="margin-bottom:6px">{signal_badges(d["sigs"])}</div>'
-        + _stats(d) + _toggle(d)
+        + _stats(d) + _toggle(d) + render_analyst_section(d.get("analyst", {}))
     )
 
 
@@ -560,26 +811,27 @@ def main() -> None:
     now_jst = datetime.now(JST)
     os.makedirs("docs", exist_ok=True)
 
-    # Indices
     idx_rows = [build_data(i["symbol"], i["name"]) for i in cfg["indices"]]
 
-    # Holdings
     hold_rows = []
     for h in cfg["holdings"]:
         d = build_data(h["symbol"], h["name"])
-        d["cost"]     = h["cost"]
+        d["cost"]      = h["cost"]
         d["stop_loss"] = h.get("stop_loss")
-        d["pnl"]      = (d["last"] / h["cost"] - 1) * 100 if d["last"] else None
+        d["pnl"]       = (d["last"] / h["cost"] - 1) * 100 if d["last"] else None
         hold_rows.append(d)
 
-    # Screener candidates
     max_n     = cfg.get("max_candidates", 10)
     cand_rows = [build_data(c["symbol"], c["name"]) for c in cfg["candidates"]]
     cand_rows = [d for d in cand_rows if not d["error"]]
     cand_rows.sort(key=lambda x: (-x["score"], -x["pct"]))
     top = cand_rows[:max_n]
 
-    updated_str = now_jst.strftime("%Y年%m月%d日 %H:%M JST")
+    # データ取得時刻: use the last date from any index row
+    data_date_str = next((d["last_date_str"] for d in idx_rows if d.get("last_date_str")), "")
+    run_str       = now_jst.strftime("%-m/%-d %H:%M")
+    header_note   = (f'データ: {data_date_str}時点 | 更新: {run_str} JST'
+                     if data_date_str else f'更新: {run_str} JST')
 
     html = f"""<!DOCTYPE html>
 <html lang="ja">
@@ -598,19 +850,18 @@ h2{{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#666;marg
 </style>
 <script>
 function sw(id,t){{
-  var d=document.getElementById('cd_'+id),m=document.getElementById('c5_'+id);
-  var bd=document.getElementById('bd_'+id),bm=document.getElementById('b5_'+id);
-  if(d)d.style.display=t==='d'?'block':'none';
-  if(m)m.style.display=t==='d'?'none':'block';
-  if(bd)bd.className=t==='d'?'tab active':'tab';
-  if(bm)bm.className=t==='d'?'tab':'tab active';
+  [['d','cd_','bd_'],['m','c5_','b5_'],['1','c1_','b1_']].forEach(function(r){{
+    var el=document.getElementById(r[1]+id),btn=document.getElementById(r[2]+id);
+    if(el)el.style.display=t===r[0]?'block':'none';
+    if(btn)btn.className=t===r[0]?'tab active':'tab';
+  }});
 }}
 </script>
 </head>
 <body>
-<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0 12px">
+<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0 10px">
   <div style="font-size:20px;font-weight:800;color:#7c83ff">kabu-watch</div>
-  <div style="font-size:11px;color:#555">{updated_str}</div>
+  <div style="font-size:10px;color:#555;text-align:right;line-height:1.5">{header_note}</div>
 </div>
 
 <h2>マーケット</h2>
@@ -638,7 +889,7 @@ function sw(id,t){{
     token   = os.environ.get("LINE_CHANNEL_TOKEN", "")
     user_id = os.environ.get("LINE_USER_ID", "")
     if token and user_id:
-        lines = [f"📈 kabu-watch {updated_str}", ""]
+        lines = [f"📈 kabu-watch {run_str} JST", ""]
         if top:
             lines.append("【スクリーナー上位】")
             for d in top[:5]:
@@ -647,8 +898,8 @@ function sw(id,t){{
         lines += ["", "【保有】"]
         for d in hold_rows:
             if d["last"]:
-                pnl = d.get("pnl") or 0
-                ps  = "+" if pnl >= 0 else ""
+                pnl  = d.get("pnl") or 0
+                ps   = "+" if pnl >= 0 else ""
                 warn = " ⚠逆指値未設定" if d.get("stop_loss") is None else ""
                 lines.append(f"  {d['name']} {fmt_price(d['last'])} ({ps}{pnl:.2f}%){warn}")
         send_line(token, user_id, "\n".join(lines))
