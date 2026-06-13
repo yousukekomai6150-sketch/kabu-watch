@@ -349,22 +349,22 @@ def make_chart(ich: pd.DataFrame, w: int = 360, h: int = 190) -> str:
                 f'<rect x="{x_ - bw/2:.1f}" y="{yt:.1f}" width="{bw:.1f}" '
                 f'height="{max(1.0, yb - yt):.1f}" fill="{col}"/>')
 
-    # X-axis date labels (every ~10 bars, always include last)
+    # X-axis date labels: first bar of each ISO week (≈週1本), always include first/last
     if x_dates:
+        label_idxs = {0, min(n - 1, len(x_dates) - 1)}
+        for i in range(1, min(n, len(x_dates))):
+            if x_dates[i].isocalendar()[1] != x_dates[i - 1].isocalendar()[1]:
+                label_idxs.add(i)
         last_lx = -999.0
-        indices = list(range(0, n, max(1, n // 6))) + [n - 1]
-        seen = set()
-        for i in sorted(set(indices)):
-            if i >= len(x_dates) or i in seen:
+        for i in sorted(label_idxs):
+            if i >= len(x_dates):
                 continue
-            seen.add(i)
             x_ = bx(i)
-            if x_ - last_lx < 32:
+            if x_ - last_lx < 30:   # skip if too close (handles dense edge cases)
                 continue
-            dt  = x_dates[i]
-            lbl_d = f"{dt.month}/{dt.day}"
-            out += (f'<text x="{x_:.1f}" y="{h - 3}" fill="#556" font-size="8" '
-                    f'font-family="monospace" text-anchor="middle">{lbl_d}</text>')
+            dt = x_dates[i]
+            out += (f'<text x="{x_:.1f}" y="{h - 3}" fill="#8899aa" font-size="8" '
+                    f'font-family="monospace" text-anchor="middle">{dt.month}/{dt.day}</text>')
             last_lx = x_
 
     return out + "</svg>"
@@ -478,22 +478,21 @@ def make_5min_chart(df5: pd.DataFrame, w: int = 360, h: int = 190) -> str:
                 f'<rect x="{x_-bw/2:.1f}" y="{yt:.1f}" width="{bw:.1f}" '
                 f'height="{max(0.8, yb - yt):.1f}" fill="{col}"/>')
 
-    # X-axis time labels: day boundaries + key hours (09, 12, 15)
+    # X-axis time labels: 30分刻み (9:00, 9:30, 10:00...) within TSE trading hours
+    # min_spacing=25px → 2日表示では自動的に1時間刻みに間引かれる
     if x_times:
         last_lx = -999.0
         for i, ts in enumerate(x_times):
             is_boundary = i in day_boundaries
-            is_key_hour = ts.minute == 0 and ts.hour in (9, 12, 15)
-            if not (is_boundary or is_key_hour):
+            is_30min    = ts.minute in (0, 30) and 9 <= ts.hour <= 15
+            if not (is_boundary or is_30min):
                 continue
             x_ = bx(i)
-            if x_ - last_lx < 33:
+            if x_ - last_lx < 25:
                 continue
-            if is_boundary:
-                lbl_t = f"{ts.month}/{ts.day}"
-            else:
-                lbl_t = f"{ts.hour:02d}:00"
-            out += (f'<text x="{x_:.1f}" y="{h - 3}" fill="#556" font-size="8" '
+            lbl_t = (f"{ts.month}/{ts.day}" if is_boundary
+                     else f"{ts.hour}:{ts.minute:02d}")
+            out += (f'<text x="{x_:.1f}" y="{h - 3}" fill="#8899aa" font-size="8" '
                     f'font-family="monospace" text-anchor="middle">{lbl_t}</text>')
             last_lx = x_
 
