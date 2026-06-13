@@ -36,5 +36,6 @@
       "stop_loss": null
     }
   ],
-  "max_candidates": 10
+  "max_candidates": 10,
+  "max_price": 5000
 }
