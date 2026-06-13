@@ -679,45 +679,52 @@ def send_line(token: str, user_id: str, message: str) -> None:
 # ── Per-symbol data builder ────────────────────────────────────────────────────
 
 def build_data(symbol: str, name: str) -> dict:
-    df  = fetch_ohlcv(symbol, period="1y")
-    df5 = fetch_5min(symbol)
-    df1 = fetch_1min(symbol)
-
-    base: dict = {"symbol": symbol, "name": name, "error": True,
+    base: dict = {"symbol": symbol, "name": name, "error": True, "error_msg": "データ取得失敗",
                   "last": None, "pct": 0.0, "score": 0, "sigs": {},
                   "last_date_str": "", "analyst": {"news": []}}
-    if len(df) < 55:
+    if "=F" in symbol:
+        base["error_msg"] = "先物データ取得不可"
         return base
+    try:
+        df  = fetch_ohlcv(symbol, period="1y")
+        df5 = fetch_5min(symbol)
+        df1 = fetch_1min(symbol)
 
-    ich              = ichimoku(df)
-    score, sigs      = calc_signals(ich, df)
-    rsi_v            = calc_rsi(df["Close"])
-    macd_v, macd_s, macd_h = calc_macd(df["Close"])
-    vol_ratio, _     = calc_volume_signal(df)
-    drawdown         = calc_52w_drawdown(df)
-    last             = float(df["Close"].iloc[-1])
-    prev             = float(df["Close"].iloc[-2]) if len(df) > 1 else last
-    pct              = (last / prev - 1) * 100 if prev else 0.0
-    last_date_str    = _last_date_str(df)
-    analyst          = fetch_analyst(symbol, last)
+        if len(df) < 55:
+            return base
 
-    day_price = make_chart(ich)
-    day_vol   = make_volume_chart(df, max_bars=60)
-    m5_price  = make_intraday_chart(df5, max_bars=160, interval_label="5分足") if len(df5) >= 5 else ""
-    m5_vol    = make_volume_chart(df5, max_bars=160) if len(df5) >= 5 else ""
-    m1_price  = make_intraday_chart(df1, max_bars=200, interval_label="1分足") if len(df1) >= 5 else ""
-    m1_vol    = make_volume_chart(df1, max_bars=200) if len(df1) >= 5 else ""
+        ich              = ichimoku(df)
+        score, sigs      = calc_signals(ich, df)
+        rsi_v            = calc_rsi(df["Close"])
+        macd_v, macd_s, macd_h = calc_macd(df["Close"])
+        vol_ratio, _     = calc_volume_signal(df)
+        drawdown         = calc_52w_drawdown(df)
+        last             = float(df["Close"].iloc[-1])
+        prev             = float(df["Close"].iloc[-2]) if len(df) > 1 else last
+        pct              = (last / prev - 1) * 100 if prev else 0.0
+        last_date_str    = _last_date_str(df)
+        analyst          = fetch_analyst(symbol, last)
 
-    return {
-        "symbol": symbol, "name": name, "error": False,
-        "last": last, "pct": pct, "score": score, "sigs": sigs,
-        "rsi": rsi_v, "macd_v": macd_v, "macd_s": macd_s, "macd_h": macd_h,
-        "vol_ratio": vol_ratio, "drawdown": drawdown,
-        "last_date_str": last_date_str, "analyst": analyst,
-        "day_price": day_price, "day_vol": day_vol,
-        "m5_price": m5_price, "m5_vol": m5_vol,
-        "m1_price": m1_price, "m1_vol": m1_vol,
-    }
+        day_price = make_chart(ich)
+        day_vol   = make_volume_chart(df, max_bars=60)
+        m5_price  = make_intraday_chart(df5, max_bars=160, interval_label="5分足") if len(df5) >= 5 else ""
+        m5_vol    = make_volume_chart(df5, max_bars=160) if len(df5) >= 5 else ""
+        m1_price  = make_intraday_chart(df1, max_bars=200, interval_label="1分足") if len(df1) >= 5 else ""
+        m1_vol    = make_volume_chart(df1, max_bars=200) if len(df1) >= 5 else ""
+
+        return {
+            "symbol": symbol, "name": name, "error": False,
+            "last": last, "pct": pct, "score": score, "sigs": sigs,
+            "rsi": rsi_v, "macd_v": macd_v, "macd_s": macd_s, "macd_h": macd_h,
+            "vol_ratio": vol_ratio, "drawdown": drawdown,
+            "last_date_str": last_date_str, "analyst": analyst,
+            "day_price": day_price, "day_vol": day_vol,
+            "m5_price": m5_price, "m5_vol": m5_vol,
+            "m1_price": m1_price, "m1_vol": m1_vol,
+        }
+    except Exception as e:
+        print(f"[WARN] build_data {symbol}: {e}", file=sys.stderr)
+        return base
 
 
 # ── Card renderers ─────────────────────────────────────────────────────────────
@@ -804,9 +811,9 @@ def make_advice_comment(d: dict) -> str:
     )
 
 
-
+def render_index_card(d: dict) -> str:
     if d.get("error") or d["last"] is None:
-        return card(f'<div style="color:#888">{d["name"]} — データ取得失敗</div>')
+        return card(f'<div style="color:#888">{d["name"]} — {d.get("error_msg", "データ取得失敗")}</div>')
     pc = _pct_color(d["pct"])
     ps = "+" if d["pct"] >= 0 else ""
     return card(
@@ -823,7 +830,7 @@ def make_advice_comment(d: dict) -> str:
 
 def render_holding_card(d: dict) -> str:
     if d.get("error") or d["last"] is None:
-        return card(f'<div style="color:#888">{d["name"]} — データ取得失敗</div>')
+        return card(f'<div style="color:#888">{d["name"]} — {d.get("error_msg", "データ取得失敗")}</div>')
     pnl = d.get("pnl", 0.0) or 0.0
     pc  = _pct_color(pnl)
     ps  = "+" if pnl >= 0 else ""
@@ -879,18 +886,35 @@ def main() -> None:
     now_jst = datetime.now(JST)
     os.makedirs("docs", exist_ok=True)
 
-    idx_rows = [build_data(i["symbol"], i["name"]) for i in cfg["indices"]]
+    _err_base = lambda sym, nm: {"symbol": sym, "name": nm, "error": True,
+                                 "error_msg": "データ取得失敗", "last": None, "pct": 0.0,
+                                 "score": 0, "sigs": {}, "last_date_str": "", "analyst": {"news": []}}
+    idx_rows = []
+    for i in cfg["indices"]:
+        try:
+            idx_rows.append(build_data(i["symbol"], i["name"]))
+        except Exception as e:
+            print(f"[WARN] idx {i['symbol']}: {e}", file=sys.stderr)
+            idx_rows.append(_err_base(i["symbol"], i["name"]))
 
     hold_rows = []
     for h in cfg["holdings"]:
-        d = build_data(h["symbol"], h["name"])
-        d["cost"]      = h["cost"]
-        d["stop_loss"] = h.get("stop_loss")
-        d["pnl"]       = (d["last"] / h["cost"] - 1) * 100 if d["last"] else None
-        hold_rows.append(d)
+        try:
+            d = build_data(h["symbol"], h["name"])
+            d["cost"]      = h["cost"]
+            d["stop_loss"] = h.get("stop_loss")
+            d["pnl"]       = (d["last"] / h["cost"] - 1) * 100 if d["last"] else None
+            hold_rows.append(d)
+        except Exception as e:
+            print(f"[WARN] holding {h['symbol']}: {e}", file=sys.stderr)
 
     max_n     = cfg.get("max_candidates", 10)
-    cand_rows = [build_data(c["symbol"], c["name"]) for c in cfg["candidates"]]
+    cand_rows = []
+    for c in cfg["candidates"]:
+        try:
+            cand_rows.append(build_data(c["symbol"], c["name"]))
+        except Exception as e:
+            print(f"[WARN] cand {c['symbol']}: {e}", file=sys.stderr)
     cand_rows = [d for d in cand_rows if not d["error"]]
     cand_rows.sort(key=lambda x: (-x["score"], -x["pct"]))
     top = cand_rows[:max_n]
