@@ -736,7 +736,71 @@ def _data_ts(d: dict) -> str:
     return f'<span style="font-size:10px;color:#555">{ds}時点</span>' if ds else ""
 
 
-def render_index_card(d: dict) -> str:
+def make_advice_comment(d: dict) -> str:
+    """必ず日本語で回答すること。テクニカル指標からワンポイントアドバイスを生成する。"""
+    sigs     = d.get("sigs", {})
+    score    = d.get("score", 0)
+    rsi      = d.get("rsi",      float("nan"))
+    macd_h   = d.get("macd_h",   float("nan"))
+    drawdown = d.get("drawdown", float("nan"))
+
+    parts: list[str] = []
+
+    # ── 一目均衡表シグナル評価 ──────────────────────────────────────────────
+    if sigs.get("三役好転"):
+        parts.append("一目均衡表で三役好転が成立し強気トレンドが継続中")
+    elif sigs.get("雲抜け") and sigs.get("上昇トレンド"):
+        parts.append("雲上抜けと基準線上維持で上昇基調")
+    elif sigs.get("雲抜け"):
+        parts.append("雲上抜けを確認したが基準線との位置関係を要確認")
+    elif sigs.get("転換GC"):
+        parts.append("転換線が基準線をゴールデンクロスし上昇の初動の可能性")
+    elif sigs.get("上昇トレンド"):
+        parts.append("基準線上で推移しているが雲抜けには至っていない")
+    elif score == 0:
+        parts.append("現時点で一目均衡表のシグナルは未点灯")
+
+    # ── RSI ────────────────────────────────────────────────────────────────
+    if not pd.isna(rsi):
+        if rsi >= 75:
+            parts.append(f"RSI({rsi:.0f})が過熱圏で短期的な調整リスクに注意")
+        elif rsi >= 70:
+            parts.append(f"RSI({rsi:.0f})が過熱ゾーン入り口のため利確タイミングを意識")
+        elif rsi <= 25:
+            parts.append(f"RSI({rsi:.0f})が売られすぎ水準で自律反発に期待")
+        elif rsi <= 30:
+            parts.append(f"RSI({rsi:.0f})が売られすぎ圏に接近")
+
+    # ── MACD ───────────────────────────────────────────────────────────────
+    if not pd.isna(macd_h):
+        if macd_h > 0 and not any(parts):
+            parts.append("MACDヒストグラムがプラス圏で短期的な上昇モメンタム継続")
+        elif macd_h < 0 and score == 0:
+            parts.append("MACDヒストグラムがマイナス圏で下降圧力あり")
+
+    # ── 52週高値比 ──────────────────────────────────────────────────────────
+    if not pd.isna(drawdown):
+        if drawdown >= -3:
+            parts.append("52週高値圏で推移しており相対的な強さを維持")
+        elif drawdown <= -40:
+            parts.append(f"52週高値から{abs(drawdown):.0f}%下落しており底打ち確認が重要")
+
+    # ── 出来高 ─────────────────────────────────────────────────────────────
+    if sigs.get("出来高急増"):
+        parts.append("出来高急増で市場参加者の関心が高まっている")
+
+    if not parts:
+        return ""
+
+    sentence = "。".join(parts[:2]) + "。"
+    return (
+        f'<div style="font-size:11px;color:#aab8c4;margin-top:6px;padding-top:6px;'
+        f'border-top:1px solid #1a1a3a;line-height:1.6">'
+        f'💬 {sentence}</div>'
+    )
+
+
+
     if d.get("error") or d["last"] is None:
         return card(f'<div style="color:#888">{d["name"]} — データ取得失敗</div>')
     pc = _pct_color(d["pct"])
@@ -749,7 +813,7 @@ def render_index_card(d: dict) -> str:
         f'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">'
         f'<span style="font-size:20px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</span>'
         f'<span style="font-size:14px;color:{pc}">{ps}{d["pct"]:.2f}%</span></div>'
-        + _stats(d) + _toggle(d) + render_analyst_section(d.get("analyst", {}))
+        + _stats(d) + make_advice_comment(d) + _toggle(d) + render_analyst_section(d.get("analyst", {}))
     )
 
 
@@ -776,7 +840,7 @@ def render_holding_card(d: dict) -> str:
         + (f' | 逆指値 {fmt_price(d["stop_loss"])} 円' if d.get("stop_loss") else "")
         + f'</div>'
         + (f'<div style="margin-bottom:6px">{signal_badges(d["sigs"])}</div>' if d.get("sigs") else "")
-        + _stats(d) + _toggle(d) + warn + render_analyst_section(d.get("analyst", {}))
+        + _stats(d) + make_advice_comment(d) + _toggle(d) + warn + render_analyst_section(d.get("analyst", {}))
     )
 
 
@@ -798,7 +862,7 @@ def render_candidate_card(d: dict) -> str:
         f'<div style="font-size:16px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</div>'
         f'<div style="font-size:12px;color:{pc}">{ps}{d["pct"]:.2f}%</div></div></div>'
         f'<div style="margin-bottom:6px">{signal_badges(d["sigs"])}</div>'
-        + _stats(d) + _toggle(d) + render_analyst_section(d.get("analyst", {}))
+        + _stats(d) + make_advice_comment(d) + _toggle(d) + render_analyst_section(d.get("analyst", {}))
     )
 
 
@@ -864,11 +928,11 @@ function sw(id,t){{
   <div style="font-size:10px;color:#555;text-align:right;line-height:1.5">{header_note}</div>
 </div>
 
-<h2>マーケット</h2>
-{"".join(render_index_card(d) for d in idx_rows)}
-
 <h2>保有銘柄</h2>
 {"".join(render_holding_card(d) for d in hold_rows)}
+
+<h2>マーケット</h2>
+{"".join(render_index_card(d) for d in idx_rows)}
 
 <h2>スクリーナー TOP{len(top)}</h2>
 <div style="font-size:11px;color:#555;margin-bottom:8px">スコア = 雲抜け+三役好転+上昇トレンド+転換GC+出来高急増 (最大5)</div>
