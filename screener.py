@@ -971,6 +971,9 @@ def main() -> None:
         except Exception as e:
             print(f"[WARN] cand {c['symbol']}: {e}", file=sys.stderr)
     cand_rows = [d for d in cand_rows if not d["error"]]
+    max_price = cfg.get("max_price")
+    if max_price is not None:
+        cand_rows = [d for d in cand_rows if d["last"] is not None and d["last"] <= max_price]
     cand_rows.sort(key=lambda x: (-x["score"], -x["pct"]))
     top = cand_rows[:max_n]
 
