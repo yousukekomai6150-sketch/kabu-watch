@@ -5,7 +5,9 @@ import json
 import os
 import sys
 import html as html_lib
+import xml.etree.ElementTree as ET
 from datetime import datetime
+from email.utils import parsedate_to_datetime as _parse_rfc2822
 import pytz
 import yfinance as yf
 import pandas as pd
@@ -140,33 +142,42 @@ def calc_signals(ich: pd.DataFrame, df: pd.DataFrame) -> tuple:
 
 # ── Analyst info ───────────────────────────────────────────────────────────────
 
-def _parse_news_item(item: dict) -> dict:
-    """Handle both old and new yfinance news formats."""
-    # New format: item["content"] dict
-    if "content" in item and isinstance(item["content"], dict):
-        c     = item["content"]
-        title = c.get("title", "")
-        link  = ((c.get("canonicalUrl") or {}).get("url")
-                 or (c.get("clickThroughUrl") or {}).get("url", ""))
-        pub   = c.get("pubDate", "")
-        if pub:
-            try:
-                dt  = datetime.fromisoformat(pub.replace("Z", "+00:00")).astimezone(JST)
-                pub = f"{dt.month}/{dt.day}"
-            except Exception:
-                pub = pub[:10]
-        return {"title": title, "link": link, "date": pub}
-    # Old format: flat dict
-    title = item.get("title", "")
-    link  = item.get("link", "")
-    ts    = item.get("providerPublishTime", 0)
-    pub   = ""
-    if ts:
-        try:
-            pub = datetime.fromtimestamp(int(ts), tz=JST).strftime("%-m/%-d")
-        except Exception:
-            pass
-    return {"title": title, "link": link, "date": pub}
+def _kabutan_news_url(symbol: str) -> str:
+    """kabutan.jp RSS URL を返す。指数・非.T銘柄はマーケットニュース。"""
+    if not symbol.endswith(".T"):
+        return "https://kabutan.jp/news/rss/?category=market"
+    code = symbol[:-2]   # "7012.T" → "7012"
+    return f"https://kabutan.jp/news/rss/?code={code}"
+
+
+def fetch_kabutan_news(symbol: str, max_items: int = 3) -> list:
+    """kabutan.jp RSS から最新ニュースを取得。取得失敗時は [] を返す。"""
+    url = _kabutan_news_url(symbol)
+    try:
+        resp = requests.get(
+            url, timeout=10,
+            headers={"User-Agent": "Mozilla/5.0 kabu-watch/1.0"},
+        )
+        resp.raise_for_status()
+        root  = ET.fromstring(resp.content)
+        items = []
+        for elem in root.findall(".//item")[:max_items]:
+            title = (elem.findtext("title") or "").strip()
+            link  = (elem.findtext("link")  or "").strip()
+            pub   = (elem.findtext("pubDate") or "").strip()
+            date_str = ""
+            if pub:
+                try:
+                    dt = _parse_rfc2822(pub).astimezone(JST)
+                    date_str = f"{dt.month}/{dt.day}"
+                except Exception:
+                    pass
+            if title:
+                items.append({"title": title, "link": link, "date": date_str})
+        return items
+    except Exception as e:
+        print(f"[WARN] kabutan news {symbol}: {e}", file=sys.stderr)
+        return []
 
 
 def fetch_analyst(symbol: str, current_price: float) -> dict:
@@ -210,14 +221,8 @@ def fetch_analyst(symbol: str, current_price: float) -> dict:
         except Exception:
             pass
 
-        # News (latest 3)
-        try:
-            for item in (tk.news or [])[:3]:
-                parsed = _parse_news_item(item)
-                if parsed.get("title"):
-                    out["news"].append(parsed)
-        except Exception:
-            pass
+        # News from kabutan.jp RSS (日本語)
+        out["news"] = fetch_kabutan_news(symbol)
 
     except Exception as e:
         print(f"[WARN] analyst {symbol}: {e}", file=sys.stderr)
@@ -631,7 +636,7 @@ def render_analyst_section(analyst: dict) -> str:
         parts.append(f'<div style="font-size:11px;margin-bottom:4px">'
                      f'コンセンサス <span style="color:{rc}">{rl}</span></div>')
 
-    # News
+    # News from kabutan.jp (always shown)
     news_items = analyst.get("news", [])
     if news_items:
         news_html = ""
@@ -647,10 +652,9 @@ def render_analyst_section(analyst: dict) -> str:
                 f'style="color:#7c83ff;text-decoration:none;font-size:11px">{title}</a>'
                 f'{date_span}</div>'
             )
-        parts.append(f'<div style="margin-top:2px">{news_html}</div>')
-
-    if not parts:
-        return '<div style="font-size:11px;color:#555;margin-top:6px;padding-top:6px;border-top:1px solid #1a1a3a">評価データなし</div>'
+        parts.append(f'<div style="margin-top:4px">{news_html}</div>')
+    else:
+        parts.append('<div style="font-size:11px;color:#555;margin-top:4px">ニュースなし</div>')
 
     return ('<div style="border-top:1px solid #1a1a3a;margin-top:8px;padding-top:8px">'
             + "".join(parts) + "</div>")
