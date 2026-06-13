@@ -103,6 +103,18 @@ def calc_52w_drawdown(df: pd.DataFrame) -> float:
     return (current / high_52w - 1) * 100 if high_52w > 0 else float("nan")
 
 
+def calc_atr(df: pd.DataFrame, period: int = 14) -> float:
+    if len(df) < period + 1:
+        return float("nan")
+    h  = df["High"]
+    l  = df["Low"]
+    pc = df["Close"].shift(1)
+    tr = pd.concat([(h - l), (h - pc).abs(), (l - pc).abs()], axis=1).max(axis=1)
+    atr = tr.ewm(com=period - 1, min_periods=period).mean()
+    v = atr.iloc[-1]
+    return float(v) if not pd.isna(v) else float("nan")
+
+
 def calc_signals(ich: pd.DataFrame, df: pd.DataFrame) -> tuple:
     empty = {
         "雲抜け": False, "三役好転": False, "上昇トレンド": False,
@@ -716,16 +728,29 @@ def build_data(symbol: str, name: str) -> dict:
         stop_recommend = None
         dip_buy_range  = None
         lat = ich.iloc[-1]
-        if not any(pd.isna(lat[c]) for c in ["kijun", "tenkan", "span_a", "span_b"]):
-            kijun_v     = float(lat["kijun"])
-            tenkan_v    = float(lat["tenkan"])
-            span_a_v    = float(lat["span_a"])
-            span_b_v    = float(lat["span_b"])
-            cloud_top_v = max(span_a_v, span_b_v)
-            cloud_bot_v = min(span_a_v, span_b_v)
-            # 逆指値推奨: 基準線と雲下限のうち低い方
-            stop_recommend = min(kijun_v, cloud_bot_v)
-            # 押し目レンジ: 上昇シグナルあり かつ 雲の中にいない場合のみ
+        kijun_v  = float(lat["kijun"])  if not pd.isna(lat["kijun"])  else None
+        tenkan_v = float(lat["tenkan"]) if not pd.isna(lat["tenkan"]) else None
+        span_a_v = float(lat["span_a"]) if not pd.isna(lat["span_a"]) else None
+        span_b_v = float(lat["span_b"]) if not pd.isna(lat["span_b"]) else None
+        cloud_bot_v = (min(span_a_v, span_b_v)
+                       if span_a_v is not None and span_b_v is not None else None)
+        cloud_top_v = (max(span_a_v, span_b_v)
+                       if span_a_v is not None and span_b_v is not None else None)
+
+        # ① 基準線・雲下限のうち現在値より低い候補の最小値
+        sr_candidates = [v for v in [kijun_v, cloud_bot_v]
+                         if v is not None and v < last]
+        if sr_candidates:
+            stop_recommend = min(sr_candidates)
+        else:
+            # ② 両方が現在値以上(雲下・トレンド崩れ) → ATR(14)×1.5 フォールバック
+            atr_v = calc_atr(df)
+            if not pd.isna(atr_v) and atr_v > 0:
+                stop_recommend = last - atr_v * 1.5
+
+        # 押し目レンジ: 上昇シグナルあり かつ 雲の中にいない場合のみ
+        if kijun_v is not None and tenkan_v is not None \
+                and cloud_bot_v is not None and cloud_top_v is not None:
             in_cloud = cloud_bot_v <= last <= cloud_top_v
             if (sigs.get("雲抜け") or sigs.get("上昇トレンド")) and not in_cloud:
                 dip_buy_range = (min(tenkan_v, kijun_v), max(tenkan_v, kijun_v))
@@ -769,9 +794,9 @@ def _data_ts(d: dict) -> str:
 def _stop_recommend_html(d: dict) -> str:
     sr   = d.get("stop_recommend")
     last = d.get("last")
-    if sr is None or last is None or sr <= 0:
+    if sr is None or last is None or sr <= 0 or sr >= last:
         return ""
-    pct = (sr / last - 1) * 100
+    pct = (sr / last - 1) * 100   # always negative
     return (
         f'<div style="background:#0e1a2e;border:1px solid #1e3a5e;border-radius:4px;'
         f'padding:5px 8px;margin:4px 0;font-size:11px">'
