@@ -712,12 +712,31 @@ def build_data(symbol: str, name: str) -> dict:
         m1_price  = make_intraday_chart(df1, max_bars=200, interval_label="1分足") if len(df1) >= 5 else ""
         m1_vol    = make_volume_chart(df1, max_bars=200) if len(df1) >= 5 else ""
 
+        # 逆指値推奨・押し目レンジ (一目均衡表ベース)
+        stop_recommend = None
+        dip_buy_range  = None
+        lat = ich.iloc[-1]
+        if not any(pd.isna(lat[c]) for c in ["kijun", "tenkan", "span_a", "span_b"]):
+            kijun_v     = float(lat["kijun"])
+            tenkan_v    = float(lat["tenkan"])
+            span_a_v    = float(lat["span_a"])
+            span_b_v    = float(lat["span_b"])
+            cloud_top_v = max(span_a_v, span_b_v)
+            cloud_bot_v = min(span_a_v, span_b_v)
+            # 逆指値推奨: 基準線と雲下限のうち低い方
+            stop_recommend = min(kijun_v, cloud_bot_v)
+            # 押し目レンジ: 上昇シグナルあり かつ 雲の中にいない場合のみ
+            in_cloud = cloud_bot_v <= last <= cloud_top_v
+            if (sigs.get("雲抜け") or sigs.get("上昇トレンド")) and not in_cloud:
+                dip_buy_range = (min(tenkan_v, kijun_v), max(tenkan_v, kijun_v))
+
         return {
             "symbol": symbol, "name": name, "error": False,
             "last": last, "pct": pct, "score": score, "sigs": sigs,
             "rsi": rsi_v, "macd_v": macd_v, "macd_s": macd_s, "macd_h": macd_h,
             "vol_ratio": vol_ratio, "drawdown": drawdown,
             "last_date_str": last_date_str, "analyst": analyst,
+            "stop_recommend": stop_recommend, "dip_buy_range": dip_buy_range,
             "day_price": day_price, "day_vol": day_vol,
             "m5_price": m5_price, "m5_vol": m5_vol,
             "m1_price": m1_price, "m1_vol": m1_vol,
@@ -745,6 +764,42 @@ def _toggle(d: dict) -> str:
 def _data_ts(d: dict) -> str:
     ds = d.get("last_date_str", "")
     return f'<span style="font-size:10px;color:#555">{ds}時点</span>' if ds else ""
+
+
+def _stop_recommend_html(d: dict) -> str:
+    sr   = d.get("stop_recommend")
+    last = d.get("last")
+    if sr is None or last is None or sr <= 0:
+        return ""
+    pct = (sr / last - 1) * 100
+    return (
+        f'<div style="background:#0e1a2e;border:1px solid #1e3a5e;border-radius:4px;'
+        f'padding:5px 8px;margin:4px 0;font-size:11px">'
+        f'<span style="color:#4499ff">⊙ 逆指値推奨</span>  '
+        f'<span style="color:#e0e0f0;font-weight:600">{fmt_price(sr)}</span>円  '
+        f'<span style="color:#26a69a">({pct:+.1f}%)</span>'
+        f'<span style="color:#555;font-size:10px">  基準線・雲下限の低い方</span>'
+        f'</div>'
+    )
+
+
+def _dip_buy_html(d: dict) -> str:
+    dbr  = d.get("dip_buy_range")
+    last = d.get("last")
+    if dbr is None or last is None:
+        return ""
+    low, high = dbr
+    if low >= last:
+        return ""
+    low_pct  = (low  / last - 1) * 100
+    high_pct = (high / last - 1) * 100
+    if abs(high - low) < last * 0.001:
+        return (f'<div style="font-size:11px;color:#7c83ff;margin:3px 0 5px">'
+                f'📍 押し目 <span style="color:#e0e0f0">{fmt_price(low)}</span>円 '
+                f'<span style="color:#26a69a">({low_pct:+.1f}%)</span></div>')
+    return (f'<div style="font-size:11px;color:#7c83ff;margin:3px 0 5px">'
+            f'📍 押し目 <span style="color:#e0e0f0">{fmt_price(low)}〜{fmt_price(high)}</span>円 '
+            f'<span style="color:#26a69a">({low_pct:+.1f}〜{high_pct:+.1f}%)</span></div>')
 
 
 def make_advice_comment(d: dict) -> str:
@@ -851,7 +906,7 @@ def render_holding_card(d: dict) -> str:
         + (f' | 逆指値 {fmt_price(d["stop_loss"])} 円' if d.get("stop_loss") else "")
         + f'</div>'
         + (f'<div style="margin-bottom:6px">{signal_badges(d["sigs"])}</div>' if d.get("sigs") else "")
-        + _stats(d) + make_advice_comment(d) + _toggle(d) + warn + render_analyst_section(d.get("analyst", {}))
+        + _stop_recommend_html(d) + _stats(d) + make_advice_comment(d) + _toggle(d) + warn + render_analyst_section(d.get("analyst", {}))
     )
 
 
@@ -873,7 +928,7 @@ def render_candidate_card(d: dict) -> str:
         f'<div style="font-size:16px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</div>'
         f'<div style="font-size:12px;color:{pc}">{ps}{d["pct"]:.2f}%</div></div></div>'
         f'<div style="margin-bottom:6px">{signal_badges(d["sigs"])}</div>'
-        + _stats(d) + make_advice_comment(d) + _toggle(d) + render_analyst_section(d.get("analyst", {}))
+        + _dip_buy_html(d) + _stats(d) + make_advice_comment(d) + _toggle(d) + render_analyst_section(d.get("analyst", {}))
     )
 
 

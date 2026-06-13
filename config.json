@@ -18,6 +18,7 @@
   ],
   "indices": [
     {"symbol": "^N225", "name": "日経225"},
+    {"symbol": "^TOPIX", "name": "TOPIX"},
     {"symbol": "1306.T", "name": "TOPIX ETF"},
     {"symbol": "2516.T", "name": "東証グロースETF"}
   ],
