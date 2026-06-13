@@ -4,6 +4,8 @@ on:
   schedule:
     - cron: '30 7 * * 1-5'   # 16:30 JST (UTC+9 = UTC 07:30), Mon–Fri
   workflow_dispatch:
+  push:
+    branches: [main]
 
 jobs:
   screen:

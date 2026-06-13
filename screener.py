@@ -34,6 +34,15 @@ def fetch_5min(symbol: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def fetch_1min(symbol: str) -> pd.DataFrame:
+    try:
+        df = yf.Ticker(symbol).history(period="1d", interval="1m", auto_adjust=True)
+        return df.dropna(subset=["Close"])
+    except Exception as e:
+        print(f"[WARN] 1min {symbol}: {e}", file=sys.stderr)
+        return pd.DataFrame()
+
+
 # ── Ichimoku ───────────────────────────────────────────────────────────────────
 
 def ichimoku(df: pd.DataFrame) -> pd.DataFrame:
@@ -363,7 +372,7 @@ def make_chart(ich: pd.DataFrame, w: int = 360, h: int = 190) -> str:
             if x_ - last_lx < 30:   # skip if too close (handles dense edge cases)
                 continue
             dt = x_dates[i]
-            out += (f'<text x="{x_:.1f}" y="{h - 3}" fill="#8899aa" font-size="8" '
+            out += (f'<text x="{x_:.1f}" y="{h - 3}" fill="#ccd6e0" font-size="8" '
                     f'font-family="monospace" text-anchor="middle">{dt.month}/{dt.day}</text>')
             last_lx = x_
 
@@ -417,9 +426,9 @@ def make_volume_chart(df: pd.DataFrame, w: int = 360, h: int = 55, max_bars: int
 
 # ── 5-minute chart (ローソク足 + X-axis time labels) ─────────────────────────
 
-def make_5min_chart(df5: pd.DataFrame, w: int = 360, h: int = 190) -> str:
-    MAX_BARS = 160
-    n = min(MAX_BARS, len(df5))
+def make_intraday_chart(df5: pd.DataFrame, max_bars: int = 160,
+                        interval_label: str = "5分足", w: int = 360, h: int = 190) -> str:
+    n = min(max_bars, len(df5))
     if n < 3:
         return (_svg_open(w, h) +
                 '<text x="50%" y="52%" fill="#555" text-anchor="middle" font-size="11">データなし</text></svg>')
@@ -453,7 +462,7 @@ def make_5min_chart(df5: pd.DataFrame, w: int = 360, h: int = 190) -> str:
 
     out = _svg_open(w, h)
     out += (f'<text x="{PL}" y="11" fill="#aaa" font-size="9" font-family="monospace">{lbl}</text>'
-            f'<text x="{w//2}" y="11" fill="#444" font-size="8" font-family="monospace" text-anchor="middle">5分足</text>'
+            f'<text x="{w//2}" y="11" fill="#444" font-size="8" font-family="monospace" text-anchor="middle">{interval_label}</text>'
             f'<text x="{w-PR}" y="11" fill="{pc}" font-size="9" font-family="monospace" text-anchor="end">'
             f'{"+" if pct >= 0 else ""}{pct:.2f}%</text>')
 
@@ -492,7 +501,7 @@ def make_5min_chart(df5: pd.DataFrame, w: int = 360, h: int = 190) -> str:
                 continue
             lbl_t = (f"{ts.month}/{ts.day}" if is_boundary
                      else f"{ts.hour}:{ts.minute:02d}")
-            out += (f'<text x="{x_:.1f}" y="{h - 3}" fill="#8899aa" font-size="8" '
+            out += (f'<text x="{x_:.1f}" y="{h - 3}" fill="#ccd6e0" font-size="8" '
                     f'font-family="monospace" text-anchor="middle">{lbl_t}</text>')
             last_lx = x_
 
@@ -532,18 +541,24 @@ def safe_id(symbol: str) -> str:
     return symbol.replace(".", "_").replace("^", "X")
 
 
-def chart_toggle(sym: str, day_price: str, day_vol: str, m5_price: str, m5_vol: str) -> str:
+def chart_toggle(sym: str, day_price: str, day_vol: str,
+                 m5_price: str, m5_vol: str,
+                 m1_price: str = "", m1_vol: str = "") -> str:
     sid    = safe_id(sym)
     has_m5 = bool(m5_price)
-    extra  = (f'<button id="b5_{sid}" onclick="sw(\'{sid}\',\'m\')" class="tab">5分足</button>'
-              if has_m5 else "")
-    m5_div = (f'<div id="c5_{sid}" style="display:none">{m5_price}{m5_vol}</div>'
-              if has_m5 else "")
-    return (f'<div style="display:flex;gap:4px;margin-bottom:6px">'
-            f'<button id="bd_{sid}" onclick="sw(\'{sid}\',\'d\')" class="tab active">日足</button>'
-            f'{extra}</div>'
-            f'<div id="cd_{sid}">{day_price}{day_vol}</div>'
-            f'{m5_div}')
+    has_m1 = bool(m1_price)
+    tabs   = (f'<button id="bd_{sid}" onclick="sw(\'{sid}\',\'d\')" class="tab active">日足</button>')
+    if has_m5:
+        tabs += f'<button id="b5_{sid}" onclick="sw(\'{sid}\',\'m\')" class="tab">5分足</button>'
+    if has_m1:
+        tabs += f'<button id="b1_{sid}" onclick="sw(\'{sid}\',\'1\')" class="tab">1分足</button>'
+    divs   = f'<div id="cd_{sid}">{day_price}{day_vol}</div>'
+    if has_m5:
+        divs  += f'<div id="c5_{sid}" style="display:none">{m5_price}{m5_vol}</div>'
+    if has_m1:
+        divs  += f'<div id="c1_{sid}" style="display:none">{m1_price}{m1_vol}</div>'
+    return (f'<div style="display:flex;gap:4px;margin-bottom:6px">{tabs}</div>'
+            + divs)
 
 
 def stats_row(rsi: float, macd_v: float, macd_s: float, macd_h: float,
@@ -662,6 +677,7 @@ def send_line(token: str, user_id: str, message: str) -> None:
 def build_data(symbol: str, name: str) -> dict:
     df  = fetch_ohlcv(symbol, period="1y")
     df5 = fetch_5min(symbol)
+    df1 = fetch_1min(symbol)
 
     base: dict = {"symbol": symbol, "name": name, "error": True,
                   "last": None, "pct": 0.0, "score": 0, "sigs": {},
@@ -683,8 +699,10 @@ def build_data(symbol: str, name: str) -> dict:
 
     day_price = make_chart(ich)
     day_vol   = make_volume_chart(df, max_bars=60)
-    m5_price  = make_5min_chart(df5) if len(df5) >= 5 else ""
+    m5_price  = make_intraday_chart(df5, max_bars=160, interval_label="5分足") if len(df5) >= 5 else ""
     m5_vol    = make_volume_chart(df5, max_bars=160) if len(df5) >= 5 else ""
+    m1_price  = make_intraday_chart(df1, max_bars=200, interval_label="1分足") if len(df1) >= 5 else ""
+    m1_vol    = make_volume_chart(df1, max_bars=200) if len(df1) >= 5 else ""
 
     return {
         "symbol": symbol, "name": name, "error": False,
@@ -694,6 +712,7 @@ def build_data(symbol: str, name: str) -> dict:
         "last_date_str": last_date_str, "analyst": analyst,
         "day_price": day_price, "day_vol": day_vol,
         "m5_price": m5_price, "m5_vol": m5_vol,
+        "m1_price": m1_price, "m1_vol": m1_vol,
     }
 
 
@@ -708,7 +727,8 @@ def _stats(d: dict) -> str:
 def _toggle(d: dict) -> str:
     return chart_toggle(d["symbol"],
                         d.get("day_price", ""), d.get("day_vol", ""),
-                        d.get("m5_price", ""),  d.get("m5_vol", ""))
+                        d.get("m5_price", ""),  d.get("m5_vol", ""),
+                        d.get("m1_price", ""),  d.get("m1_vol", ""))
 
 
 def _data_ts(d: dict) -> str:
@@ -830,12 +850,11 @@ h2{{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#666;marg
 </style>
 <script>
 function sw(id,t){{
-  var d=document.getElementById('cd_'+id),m=document.getElementById('c5_'+id);
-  var bd=document.getElementById('bd_'+id),bm=document.getElementById('b5_'+id);
-  if(d)d.style.display=t==='d'?'block':'none';
-  if(m)m.style.display=t==='d'?'none':'block';
-  if(bd)bd.className=t==='d'?'tab active':'tab';
-  if(bm)bm.className=t==='d'?'tab':'tab active';
+  [['d','cd_','bd_'],['m','c5_','b5_'],['1','c1_','b1_']].forEach(function(r){{
+    var el=document.getElementById(r[1]+id),btn=document.getElementById(r[2]+id);
+    if(el)el.style.display=t===r[0]?'block':'none';
+    if(btn)btn.className=t===r[0]?'tab active':'tab';
+  }});
 }}
 </script>
 </head>
