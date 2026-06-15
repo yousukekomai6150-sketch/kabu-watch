@@ -100,6 +100,10 @@
     {"symbol": "6506.T", "name": "安川電機"},
     {"symbol": "6516.T", "name": "山洋電気"},
     {"symbol": "7741.T", "name": "HOYAコーポレーション"},
-    {"symbol": "6326.T", "name": "クボタ"}
+    {"symbol": "6326.T", "name": "クボタ"},
+    {"symbol": "9432.T", "name": "NTT"},
+    {"symbol": "6701.T", "name": "NEC"},
+    {"symbol": "6861.T", "name": "キーエンス"},
+    {"symbol": "6723.T", "name": "ルネサスエレクトロニクス"}
   ]
 }
