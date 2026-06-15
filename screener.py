@@ -1223,10 +1223,8 @@ def main() -> None:
     high_tick     = [d for d in tick_rows if d["is_high"] and d["symbol"] not in top_tick_syms][:5]
 
     # データ取得時刻: use the last date from any index row
-    data_date_str = next((d["last_date_str"] for d in idx_rows if d.get("last_date_str")), "")
-    run_str       = now_jst.strftime("%-m/%-d %H:%M")
-    header_note   = (f'データ: {data_date_str}時点 | 更新: {run_str} JST'
-                     if data_date_str else f'更新: {run_str} JST')
+    run_str     = now_jst.strftime("%-m/%-d %H:%M")
+    header_note = f'更新: {run_str} JST'
 
     html = f"""<!DOCTYPE html>
 <html lang="ja">
