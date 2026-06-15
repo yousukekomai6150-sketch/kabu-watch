@@ -2,7 +2,8 @@ name: Ichimoku Screener
 
 on:
   schedule:
-    - cron: '30 7 * * 1-5'   # 16:30 JST (UTC+9 = UTC 07:30), Mon–Fri
+    - cron: '*/10 0-6 * * 1-5'  # 場中 9:00〜15:50 JST (UTC 0:00〜6:50), 10分おき
+    - cron: '30 7 * * 1-5'      # 大引け後 16:30 JST (UTC 7:30)
   workflow_dispatch:
   push:
     branches: [main]
