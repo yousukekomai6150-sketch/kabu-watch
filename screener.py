@@ -813,7 +813,8 @@ def build_data(symbol: str, name: str) -> dict:
 
 # ── Surge screening data builder ─────────────────────────────────────────────
 
-def build_surge_data(symbol: str, name: str) -> dict | None:
+def build_surge_data(symbol: str, name: str,
+                     min_pct: float = 3.0, min_vol: float = 3.0) -> dict | None:
     """急騰スクリーニング用軽量ビルダー。フィルター不通過は None を返す。"""
     try:
         df = fetch_ohlcv(symbol, period="3mo")
@@ -826,7 +827,7 @@ def build_surge_data(symbol: str, name: str) -> dict | None:
         vol_ratio, _ = calc_volume_signal(df)
 
         # 価格・騰落率・出来高の早期フィルター
-        if last > 5000 or pct < 3.0 or vol_ratio is None or vol_ratio < 3.0:
+        if last > 5000 or pct < min_pct or vol_ratio is None or vol_ratio < min_vol:
             return None
 
         # フィルター通過後のみ時価総額を取得（API呼び出し節約）
@@ -872,25 +873,28 @@ def build_tick_data(symbol: str, name: str) -> dict | None:
         ich          = ichimoku(df)
         score, sigs  = calc_signals(ich, df)
 
-        # 雲上(=雲抜け)シグナルが必須
-        if not sigs.get("雲抜け"):
-            return None
-
         last = float(df["Close"].iloc[-1])
         prev = float(df["Close"].iloc[-2]) if len(df) > 1 else last
         pct  = (last / prev - 1) * 100 if prev else 0.0
 
-        # 押し目買いレンジ (転換線〜基準線)
+        # 押し目買いレンジ (転換線〜基準線) & 雲ポジション
         dip_buy_range = None
+        cloud_pos = "不明"
         lat = ich.iloc[-1]
         kv = float(lat["kijun"])  if not pd.isna(lat["kijun"])  else None
         tv = float(lat["tenkan"]) if not pd.isna(lat["tenkan"]) else None
         av = float(lat["span_a"]) if not pd.isna(lat["span_a"]) else None
         bv = float(lat["span_b"]) if not pd.isna(lat["span_b"]) else None
-        if kv is not None and tv is not None and av is not None and bv is not None:
+        if av is not None and bv is not None:
             cloud_bot = min(av, bv)
             cloud_top = max(av, bv)
-            if not (cloud_bot <= last <= cloud_top):
+            if last > cloud_top:
+                cloud_pos = "雲上"
+            elif last > cloud_bot:
+                cloud_pos = "雲中"
+            else:
+                cloud_pos = "雲下"
+            if kv is not None and tv is not None and not (cloud_bot <= last <= cloud_top):
                 dip_buy_range = (min(tv, kv), max(tv, kv))
 
         return {
@@ -899,6 +903,7 @@ def build_tick_data(symbol: str, name: str) -> dict | None:
             "score": score, "sigs": sigs,
             "tv_ratio": tv_ratio,
             "dip_buy_range": dip_buy_range,
+            "cloud_pos": cloud_pos,
             "tick_score": tv_ratio * (1 + score),
             "is_high": last > 5000,
         }
@@ -1097,6 +1102,24 @@ def render_tick_card(d: dict, rank: int = 0) -> str:
     pc  = _pct_color(d["pct"])
     ps  = "+" if d["pct"] >= 0 else ""
     tvc = "#ffd600" if d["tv_ratio"] >= 3.0 else "#ff9944"
+
+    cloud_pos = d.get("cloud_pos", "")
+    if cloud_pos == "雲上":
+        cp_color, cp_bg = "#00e676", "#003322"
+        card_extra = "border-left:3px solid #00e676;"
+    elif cloud_pos == "雲中":
+        cp_color, cp_bg = "#ffd600", "#2a2200"
+        card_extra = ""
+    elif cloud_pos == "雲下":
+        cp_color, cp_bg = "#888", "#1a1a1a"
+        card_extra = ""
+    else:
+        cp_color, cp_bg = "#555", "#111"
+        card_extra = ""
+    cloud_badge = (f' <span style="background:{cp_bg};color:{cp_color};border:1px solid {cp_color};'
+                   f'border-radius:3px;padding:1px 5px;font-size:10px">{cloud_pos}</span>'
+                   if cloud_pos else "")
+
     rank_html = ""
     if rank > 0:
         rc = "#ffd600" if rank == 1 else "#ff9944" if rank <= 3 else "#aaa"
@@ -1106,10 +1129,10 @@ def render_tick_card(d: dict, rank: int = 0) -> str:
     high_badge = (' <span style="background:#1a1000;color:#ff9944;border:1px solid #ff9944;'
                   'border-radius:3px;padding:1px 4px;font-size:10px">高額株</span>'
                   if d["is_high"] else "")
-    return card(
+    inner = (
         f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
         f'<div style="flex:1">{rank_html}<span style="font-weight:600;font-size:14px">{d["name"]}</span>'
-        f'{high_badge}<br><span style="font-size:11px;color:#666">{d["symbol"]}</span></div>'
+        f'{high_badge}{cloud_badge}<br><span style="font-size:11px;color:#666">{d["symbol"]}</span></div>'
         f'<div style="text-align:right">'
         f'<span style="font-size:16px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</span>'
         f' <span style="font-size:12px;color:{pc}">{ps}{d["pct"]:.2f}%</span></div></div>'
@@ -1119,6 +1142,8 @@ def render_tick_card(d: dict, rank: int = 0) -> str:
         f'<div style="margin-bottom:4px">{signal_badges(d["sigs"])}</div>'
         + _dip_buy_html(d)
     )
+    return (f'<div style="background:#111122;border-radius:8px;padding:12px;'
+            f'margin-bottom:12px;{card_extra}">{inner}</div>')
 
 
 def render_surge_card(d: dict) -> str:
@@ -1127,13 +1152,17 @@ def render_surge_card(d: dict) -> str:
     rc  = ("#ef5350" if not pd.isna(rsi) and rsi >= 70
            else "#26a69a" if not pd.isna(rsi) and rsi <= 30 else "#aaa")
     rsi_str = f"{rsi:.1f}" if not pd.isna(rsi) else "—"
+    ps  = "+" if d["pct"] >= 0 else ""
+    fallback_badge = (' <span style="background:#1a0a00;color:#ff9944;border:1px solid #ff9944;'
+                      'border-radius:3px;padding:1px 5px;font-size:10px">▲準候補(条件緩和)</span>'
+                      if d.get("is_fallback") else "")
     return card(
         f'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px">'
-        f'<div><span style="font-weight:600;font-size:14px">{d["name"]}</span>'
+        f'<div><span style="font-weight:600;font-size:14px">{d["name"]}</span>{fallback_badge}'
         f' <span style="font-size:11px;color:#666">{d["symbol"]}</span></div>'
         f'<div style="text-align:right">'
         f'<span style="font-size:16px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</span>'
-        f' <span style="font-size:13px;color:{pc}">+{d["pct"]:.2f}%</span></div></div>'
+        f' <span style="font-size:13px;color:{pc}">{ps}{d["pct"]:.2f}%</span></div></div>'
         f'<div style="display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:#666">'
         f'<span>出来高 <span style="color:#ffd600;font-weight:600">{d["vol_ratio"]:.1f}×</span></span>'
         f'<span>RSI <span style="color:{rc}">{rsi_str}</span></span>'
@@ -1205,6 +1234,18 @@ def main() -> None:
                 surge_rows.append(d)
         except Exception as e:
             print(f"[WARN] surge {sym}: {e}", file=sys.stderr)
+
+    # 厳格フィルターで0件の場合は緩和条件(+0.5%・1.5倍以上)で再スキャン
+    if not surge_rows:
+        for sym, nm in candidates_to_check:
+            try:
+                d = build_surge_data(sym, nm, min_pct=0.5, min_vol=1.5)
+                if d is not None:
+                    d["is_fallback"] = True
+                    surge_rows.append(d)
+            except Exception as e:
+                print(f"[WARN] surge-fallback {sym}: {e}", file=sys.stderr)
+
     surge_rows.sort(key=lambda x: -x["surge_score"])
     top_surge = surge_rows[:5]
 
@@ -1289,7 +1330,7 @@ function sw(id,t){{
 {"".join(render_surge_card(d) for d in top_surge) or card('<div style="color:#888;text-align:center">本日の急騰候補なし</div>')}
 
 <h2>ティック注目 × チャンス銘柄</h2>
-<div style="font-size:11px;color:#555;margin-bottom:8px">売買代金1.5倍以上 + 雲上シグナル | スコア = 売買代金倍率×(一目スコア+1)</div>
+<div style="font-size:11px;color:#555;margin-bottom:8px">売買代金1.5倍以上 | 雲上=強調表示 | スコア = 売買代金倍率×(一目スコア+1)</div>
 {"" if top_tick else card('<div style="color:#888;text-align:center">該当銘柄なし</div>')}
 {"" if not top_tick else '<div style="font-size:12px;color:#ffd600;font-weight:600;margin-bottom:6px">★ チャンス銘柄 TOP5</div>' + "".join(render_tick_card(d, rank=i+1) for i, d in enumerate(top_tick))}
 {"" if not high_tick else '<div style="font-size:12px;color:#ff9944;font-weight:600;margin:8px 0 6px">⬆ 高額注目株</div>' + "".join(render_tick_card(d) for d in high_tick)}
