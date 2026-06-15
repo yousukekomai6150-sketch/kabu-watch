@@ -104,6 +104,10 @@
     {"symbol": "9432.T", "name": "NTT"},
     {"symbol": "6701.T", "name": "NEC"},
     {"symbol": "6861.T", "name": "キーエンス"},
-    {"symbol": "6723.T", "name": "ルネサスエレクトロニクス"}
+    {"symbol": "6723.T", "name": "ルネサスエレクトロニクス"},
+    {"symbol": "8035.T", "name": "東京エレクトロン"},
+    {"symbol": "6525.T", "name": "KOKUSAI ELECTRIC"},
+    {"symbol": "4004.T", "name": "レゾナック"},
+    {"symbol": "5802.T", "name": "住友電工"}
   ]
 }

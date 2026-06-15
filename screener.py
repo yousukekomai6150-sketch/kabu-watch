@@ -814,8 +814,8 @@ def build_data(symbol: str, name: str) -> dict:
 # ── Surge screening data builder ─────────────────────────────────────────────
 
 def build_surge_data(symbol: str, name: str,
-                     min_pct: float = 3.0, min_vol: float = 3.0) -> dict | None:
-    """急騰スクリーニング用軽量ビルダー。フィルター不通過は None を返す。"""
+                     min_pct: float = 2.0, min_vol: float = 1.5) -> dict | None:
+    """急騰スクリーニング用軽量ビルダー。フィルター不通過は None を返す。価格上限なし。"""
     try:
         df = fetch_ohlcv(symbol, period="3mo")
         if len(df) < 21:
@@ -826,8 +826,8 @@ def build_surge_data(symbol: str, name: str,
         pct  = (last / prev - 1) * 100 if prev else 0.0
         vol_ratio, _ = calc_volume_signal(df)
 
-        # 価格・騰落率・出来高の早期フィルター
-        if last > 5000 or pct < min_pct or vol_ratio is None or vol_ratio < min_vol:
+        # 騰落率・出来高フィルター（価格上限なし・高額株も対象）
+        if pct < min_pct or vol_ratio is None or vol_ratio < min_vol:
             return None
 
         # フィルター通過後のみ時価総額を取得（API呼び出し節約）
@@ -851,6 +851,7 @@ def build_surge_data(symbol: str, name: str,
             "vol_ratio": vol_ratio, "rsi": rsi_v,
             "market_cap": market_cap,
             "surge_score": vol_ratio * pct,
+            "is_high_price": last > 5000,
         }
     except Exception as e:
         print(f"[WARN] surge {symbol}: {e}", file=sys.stderr)
@@ -1216,16 +1217,25 @@ def main() -> None:
     cand_rows.sort(key=lambda x: (-x["score"], -x["pct"]))
     top = cand_rows[:max_n]
 
-    # 急騰スクリーニング
+    # 急騰スクリーニング: candidates / holdings / tick_candidates / surge_candidates を統合
+    _surge_map: dict = {}
+    for _lst in [cfg.get("candidates", []), cfg.get("holdings", []),
+                 cfg.get("tick_candidates", []), cfg.get("surge_candidates", [])]:
+        for _c in _lst:
+            _surge_map[_c["symbol"]] = _c["name"]
+
     surge_syms = fetch_surge_from_kabutan(max_items=60)
-    surge_cfg_list = cfg.get("surge_candidates", [])
-    if surge_syms:
-        name_map = {c["symbol"]: c["name"] for c in surge_cfg_list}
-        candidates_to_check = [
-            (sym, name_map.get(sym, sym.replace(".T", ""))) for sym in surge_syms
-        ]
-    else:
-        candidates_to_check = [(c["symbol"], c["name"]) for c in surge_cfg_list]
+    _seen_surge: set = set()
+    candidates_to_check: list = []
+    for sym in surge_syms:
+        if sym not in _seen_surge:
+            _seen_surge.add(sym)
+            candidates_to_check.append((sym, _surge_map.get(sym, sym.replace(".T", ""))))
+    for sym, nm in _surge_map.items():
+        if sym not in _seen_surge:
+            _seen_surge.add(sym)
+            candidates_to_check.append((sym, nm))
+
     surge_rows = []
     for sym, nm in candidates_to_check:
         try:
@@ -1235,7 +1245,7 @@ def main() -> None:
         except Exception as e:
             print(f"[WARN] surge {sym}: {e}", file=sys.stderr)
 
-    # 厳格フィルターで0件の場合は緩和条件(+0.5%・1.5倍以上)で再スキャン
+    # 0件の場合は緩和条件(+0.5%・1.5倍以上)で再スキャン
     if not surge_rows:
         for sym, nm in candidates_to_check:
             try:
@@ -1247,7 +1257,24 @@ def main() -> None:
                 print(f"[WARN] surge-fallback {sym}: {e}", file=sys.stderr)
 
     surge_rows.sort(key=lambda x: -x["surge_score"])
-    top_surge = surge_rows[:5]
+    surge_cheap = [d for d in surge_rows if not d.get("is_high_price")][:5]
+    surge_high  = [d for d in surge_rows if d.get("is_high_price")][:5]
+
+    # 急騰セクション HTML を事前構築
+    _surge_cheap_html = ""
+    _surge_high_html  = ""
+    if surge_cheap:
+        _surge_cheap_html = (
+            '<div style="font-size:12px;color:#7cb9ff;font-weight:600;margin-bottom:6px">💰 買える急騰 (〜5,000円)</div>'
+            + "".join(render_surge_card(d) for d in surge_cheap)
+        )
+    if surge_high:
+        _surge_high_html = (
+            '<div style="font-size:12px;color:#ff7c7c;font-weight:600;margin:8px 0 6px">🔥 高額急騰 (5,000円超)</div>'
+            + "".join(render_surge_card(d) for d in surge_high)
+        )
+    _surge_empty_html = (card('<div style="color:#888;text-align:center">本日の急騰候補なし</div>')
+                         if not surge_cheap and not surge_high else "")
 
     # ティック注目スクリーニング
     tick_rows = []
@@ -1324,10 +1351,10 @@ function sw(id,t){{
 <div style="font-size:11px;color:#555;margin-bottom:8px">スコア = 雲抜け+三役好転+上昇トレンド+転換GC+出来高急増 (最大5)</div>
 {"".join(render_candidate_card(d) for d in top) or card('<div style="color:#888;text-align:center">候補銘柄なし</div>')}
 
-<h2>注目急騰5選</h2>
+<h2>注目急騰</h2>
 <div style="background:#1a0505;border:1px solid #cc2200;border-radius:4px;padding:6px 10px;margin-bottom:8px;font-size:11px;color:#ff5533">⚠ 急騰銘柄は値動きが激しく高リスクです。必ず逆指値を設定してください</div>
-<div style="font-size:11px;color:#555;margin-bottom:8px">フィルター: 5,000円以下・当日+3%以上・出来高3倍以上・時価総額500億円以下 | スコア = 出来高倍率×騰落率</div>
-{"".join(render_surge_card(d) for d in top_surge) or card('<div style="color:#888;text-align:center">本日の急騰候補なし</div>')}
+<div style="font-size:11px;color:#555;margin-bottom:8px">当日+2%以上・出来高1.5倍以上・時価総額500億円以下 | スコア = 出来高倍率×騰落率</div>
+{_surge_cheap_html}{_surge_high_html}{_surge_empty_html}
 
 <h2>ティック注目 × チャンス銘柄</h2>
 <div style="font-size:11px;color:#555;margin-bottom:8px">売買代金1.5倍以上 | 雲上=強調表示 | スコア = 売買代金倍率×(一目スコア+1)</div>
