@@ -116,6 +116,17 @@ def calc_atr(df: pd.DataFrame, period: int = 14) -> float:
     return float(v) if not pd.isna(v) else float("nan")
 
 
+def calc_trading_value_ratio(df: pd.DataFrame) -> float | None:
+    """当日の売買代金(終値×出来高)が20日平均の何倍かを返す。"""
+    if len(df) < 21 or "Volume" not in df.columns:
+        return None
+    tv    = df["Close"] * df["Volume"]
+    avg20 = float(tv.iloc[-21:-1].mean())
+    if avg20 <= 0:
+        return None
+    return float(tv.iloc[-1]) / avg20
+
+
 def calc_signals(ich: pd.DataFrame, df: pd.DataFrame) -> tuple:
     empty = {
         "雲抜け": False, "三役好転": False, "上昇トレンド": False,
@@ -845,6 +856,57 @@ def build_surge_data(symbol: str, name: str) -> dict | None:
         return None
 
 
+# ── Tick screening data builder ───────────────────────────────────────────────
+
+def build_tick_data(symbol: str, name: str) -> dict | None:
+    """売買代金×一目シグナルでティック注目銘柄をビルド。非通過は None。"""
+    try:
+        df = fetch_ohlcv(symbol, period="1y")
+        if len(df) < 55:
+            return None
+
+        tv_ratio = calc_trading_value_ratio(df)
+        if tv_ratio is None or tv_ratio < 1.5:
+            return None
+
+        ich          = ichimoku(df)
+        score, sigs  = calc_signals(ich, df)
+
+        # 雲上(=雲抜け)シグナルが必須
+        if not sigs.get("雲抜け"):
+            return None
+
+        last = float(df["Close"].iloc[-1])
+        prev = float(df["Close"].iloc[-2]) if len(df) > 1 else last
+        pct  = (last / prev - 1) * 100 if prev else 0.0
+
+        # 押し目買いレンジ (転換線〜基準線)
+        dip_buy_range = None
+        lat = ich.iloc[-1]
+        kv = float(lat["kijun"])  if not pd.isna(lat["kijun"])  else None
+        tv = float(lat["tenkan"]) if not pd.isna(lat["tenkan"]) else None
+        av = float(lat["span_a"]) if not pd.isna(lat["span_a"]) else None
+        bv = float(lat["span_b"]) if not pd.isna(lat["span_b"]) else None
+        if kv is not None and tv is not None and av is not None and bv is not None:
+            cloud_bot = min(av, bv)
+            cloud_top = max(av, bv)
+            if not (cloud_bot <= last <= cloud_top):
+                dip_buy_range = (min(tv, kv), max(tv, kv))
+
+        return {
+            "symbol": symbol, "name": name,
+            "last": last, "pct": pct,
+            "score": score, "sigs": sigs,
+            "tv_ratio": tv_ratio,
+            "dip_buy_range": dip_buy_range,
+            "tick_score": tv_ratio * (1 + score),
+            "is_high": last > 5000,
+        }
+    except Exception as e:
+        print(f"[WARN] tick {symbol}: {e}", file=sys.stderr)
+        return None
+
+
 # ── Card renderers ─────────────────────────────────────────────────────────────
 
 def _stats(d: dict) -> str:
@@ -1031,6 +1093,34 @@ def render_candidate_card(d: dict) -> str:
     )
 
 
+def render_tick_card(d: dict, rank: int = 0) -> str:
+    pc  = _pct_color(d["pct"])
+    ps  = "+" if d["pct"] >= 0 else ""
+    tvc = "#ffd600" if d["tv_ratio"] >= 3.0 else "#ff9944"
+    rank_html = ""
+    if rank > 0:
+        rc = "#ffd600" if rank == 1 else "#ff9944" if rank <= 3 else "#aaa"
+        rank_html = (f'<span style="background:#1a1200;color:{rc};border:1px solid {rc};'
+                     f'border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;'
+                     f'margin-right:5px">#{rank}</span>')
+    high_badge = (' <span style="background:#1a1000;color:#ff9944;border:1px solid #ff9944;'
+                  'border-radius:3px;padding:1px 4px;font-size:10px">高額株</span>'
+                  if d["is_high"] else "")
+    return card(
+        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
+        f'<div style="flex:1">{rank_html}<span style="font-weight:600;font-size:14px">{d["name"]}</span>'
+        f'{high_badge}<br><span style="font-size:11px;color:#666">{d["symbol"]}</span></div>'
+        f'<div style="text-align:right">'
+        f'<span style="font-size:16px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</span>'
+        f' <span style="font-size:12px;color:{pc}">{ps}{d["pct"]:.2f}%</span></div></div>'
+        f'<div style="display:flex;gap:10px;font-size:11px;color:#666;margin-bottom:4px">'
+        f'<span>売買代金 <span style="color:{tvc};font-weight:600">{d["tv_ratio"]:.1f}×</span></span>'
+        f'</div>'
+        f'<div style="margin-bottom:4px">{signal_badges(d["sigs"])}</div>'
+        + _dip_buy_html(d)
+    )
+
+
 def render_surge_card(d: dict) -> str:
     pc  = _pct_color(d["pct"])
     rsi = d.get("rsi", float("nan"))
@@ -1118,6 +1208,20 @@ def main() -> None:
     surge_rows.sort(key=lambda x: -x["surge_score"])
     top_surge = surge_rows[:5]
 
+    # ティック注目スクリーニング
+    tick_rows = []
+    for tc in cfg.get("tick_candidates", []):
+        try:
+            d = build_tick_data(tc["symbol"], tc["name"])
+            if d is not None:
+                tick_rows.append(d)
+        except Exception as e:
+            print(f"[WARN] tick {tc['symbol']}: {e}", file=sys.stderr)
+    tick_rows.sort(key=lambda x: -x["tick_score"])
+    top_tick      = tick_rows[:5]
+    top_tick_syms = {d["symbol"] for d in top_tick}
+    high_tick     = [d for d in tick_rows if d["is_high"] and d["symbol"] not in top_tick_syms][:5]
+
     # データ取得時刻: use the last date from any index row
     data_date_str = next((d["last_date_str"] for d in idx_rows if d.get("last_date_str")), "")
     run_str       = now_jst.strftime("%-m/%-d %H:%M")
@@ -1138,6 +1242,9 @@ h2{{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#666;marg
 .tab{{background:#1a1a2e;color:#777;border:1px solid #2a2a44;border-radius:4px;
   padding:3px 10px;font-size:11px;cursor:pointer}}
 .tab.active{{background:#2a2a4e;color:#e0e0f0;border-color:#7c83ff}}
+.rl{{position:fixed;top:10px;right:10px;background:#1a1a3e;color:#7c83ff;
+  border:1px solid #7c83ff;border-radius:6px;padding:5px 10px;font-size:12px;
+  cursor:pointer;z-index:100;box-shadow:0 2px 8px rgba(0,0,0,.5)}}
 </style>
 <script>
 function sw(id,t){{
@@ -1147,12 +1254,25 @@ function sw(id,t){{
     if(btn)btn.className=t===r[0]?'tab active':'tab';
   }});
 }}
+(function(){{
+  var ms=600000,t=Date.now();
+  function ck(){{
+    var r=Math.ceil((ms-(Date.now()-t))/60000),e=document.getElementById('cntdwn');
+    if(e)e.textContent=r>0?'次の更新まで約'+r+'分':'更新中…';
+    if(Date.now()-t>=ms)location.reload();
+  }}
+  setInterval(ck,30000);ck();
+}})();
 </script>
 </head>
 <body>
+<button class="rl" onclick="location.reload()">🔄 更新</button>
 <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0 10px">
   <div style="font-size:20px;font-weight:800;color:#7c83ff">kabu-watch</div>
-  <div style="font-size:10px;color:#555;text-align:right;line-height:1.5">{header_note}</div>
+  <div style="text-align:right">
+    <div style="font-size:10px;color:#555;line-height:1.5">{header_note}</div>
+    <div id="cntdwn" style="font-size:10px;color:#444;line-height:1.5"></div>
+  </div>
 </div>
 
 <h2>保有銘柄</h2>
@@ -1170,6 +1290,12 @@ function sw(id,t){{
 <div style="font-size:11px;color:#555;margin-bottom:8px">フィルター: 5,000円以下・当日+3%以上・出来高3倍以上・時価総額500億円以下 | スコア = 出来高倍率×騰落率</div>
 {"".join(render_surge_card(d) for d in top_surge) or card('<div style="color:#888;text-align:center">本日の急騰候補なし</div>')}
 
+<h2>ティック注目 × チャンス銘柄</h2>
+<div style="font-size:11px;color:#555;margin-bottom:8px">売買代金1.5倍以上 + 雲上シグナル | スコア = 売買代金倍率×(一目スコア+1)</div>
+{"" if top_tick else card('<div style="color:#888;text-align:center">該当銘柄なし</div>')}
+{"" if not top_tick else '<div style="font-size:12px;color:#ffd600;font-weight:600;margin-bottom:6px">★ チャンス銘柄 TOP5</div>' + "".join(render_tick_card(d, rank=i+1) for i, d in enumerate(top_tick))}
+{"" if not high_tick else '<div style="font-size:12px;color:#ff9944;font-weight:600;margin:8px 0 6px">⬆ 高額注目株</div>' + "".join(render_tick_card(d) for d in high_tick)}
+
 <div style="text-align:center;font-size:10px;color:#333;padding:16px 0 8px">
   自動更新: 平日 16:30 JST | <a href="https://github.com/yousukekomai6150-sketch/kabu-watch" style="color:#444">GitHub</a>
 </div>
@@ -1181,10 +1307,11 @@ function sw(id,t){{
         f.write(html)
     print(f"[OK] {out_path} written ({len(html):,} bytes)")
 
-    # LINE
+    # LINE — 大引け後(16:xx JST)の実行時のみ通知。場中10分おきには送らない
     token   = os.environ.get("LINE_CHANNEL_TOKEN", "")
     user_id = os.environ.get("LINE_USER_ID", "")
-    if token and user_id:
+    is_closing_run = now_jst.hour == 16
+    if token and user_id and is_closing_run:
         lines = [f"📈 kabu-watch {run_str} JST", ""]
         if top:
             lines.append("【スクリーナー上位】")
@@ -1200,6 +1327,8 @@ function sw(id,t){{
                 lines.append(f"  {d['name']} {fmt_price(d['last'])} ({ps}{pnl:.2f}%){warn}")
         send_line(token, user_id, "\n".join(lines))
         print("[OK] LINE notification sent")
+    elif not is_closing_run:
+        print("[INFO] 場中実行のため LINE 通知スキップ")
     else:
         print("[INFO] LINE secrets not set — skipping notification")
 
