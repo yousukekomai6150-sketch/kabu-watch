@@ -1044,8 +1044,8 @@ def render_index_card(d: dict) -> str:
         f'<div style="text-align:right"><span style="font-size:11px;color:#666">{d["symbol"]}</span><br>'
         f'{_data_ts(d)}</div></div>'
         f'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">'
-        f'<span style="font-size:20px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</span>'
-        f'<span style="font-size:14px;color:{pc}">{ps}{d["pct"]:.2f}%</span></div>'
+        f'<span id="price_{safe_id(d["symbol"])}" style="font-size:20px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</span>'
+        f'<span id="dayc_{safe_id(d["symbol"])}" style="font-size:14px;color:{pc}">{ps}{d["pct"]:.2f}%</span></div>'
         + _stats(d) + make_advice_comment(d) + _toggle(d) + render_analyst_section(d.get("analyst", {}))
     )
 
@@ -1066,8 +1066,8 @@ def render_holding_card(d: dict) -> str:
         f'<div style="text-align:right"><span style="font-size:11px;color:#666">{d["symbol"]}</span><br>'
         f'{_data_ts(d)}</div></div>'
         f'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">'
-        f'<span style="font-size:18px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</span>'
-        f'<span style="font-size:14px;color:{pc}">{ps}{pnl:.2f}%</span></div>'
+        f'<span id="price_{safe_id(d["symbol"])}" style="font-size:18px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</span>'
+        f'<span id="pnl_{safe_id(d["symbol"])}" data-cost="{d["cost"]}" style="font-size:14px;color:{pc}">{ps}{pnl:.2f}%</span></div>'
         f'<div style="font-size:11px;color:#666;margin-bottom:4px">'
         f'取得 {fmt_price(d["cost"])} 円'
         + (f' | 逆指値 {fmt_price(d["stop_loss"])} 円' if d.get("stop_loss") else "")
@@ -1092,8 +1092,8 @@ def render_candidate_card(d: dict) -> str:
         f'<span style="font-size:11px;color:#666">{d["symbol"]}</span>'
         f'{_data_ts(d)}</div></div></div>'
         f'<div style="text-align:right">'
-        f'<div style="font-size:16px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</div>'
-        f'<div style="font-size:12px;color:{pc}">{ps}{d["pct"]:.2f}%</div></div></div>'
+        f'<div id="price_{safe_id(d["symbol"])}" style="font-size:16px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</div>'
+        f'<div id="dayc_{safe_id(d["symbol"])}" style="font-size:12px;color:{pc}">{ps}{d["pct"]:.2f}%</div></div></div>'
         f'<div style="margin-bottom:6px">{signal_badges(d["sigs"])}</div>'
         + _dip_buy_html(d) + _stats(d) + make_advice_comment(d) + _toggle(d) + render_analyst_section(d.get("analyst", {}))
     )
@@ -1135,8 +1135,8 @@ def render_tick_card(d: dict, rank: int = 0) -> str:
         f'<div style="flex:1">{rank_html}<span style="font-weight:600;font-size:14px">{d["name"]}</span>'
         f'{high_badge}{cloud_badge}<br><span style="font-size:11px;color:#666">{d["symbol"]}</span></div>'
         f'<div style="text-align:right">'
-        f'<span style="font-size:16px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</span>'
-        f' <span style="font-size:12px;color:{pc}">{ps}{d["pct"]:.2f}%</span></div></div>'
+        f'<span id="price_{safe_id(d["symbol"])}" style="font-size:16px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</span>'
+        f' <span id="dayc_{safe_id(d["symbol"])}" style="font-size:12px;color:{pc}">{ps}{d["pct"]:.2f}%</span></div></div>'
         f'<div style="display:flex;gap:10px;font-size:11px;color:#666;margin-bottom:4px">'
         f'<span>売買代金 <span style="color:{tvc};font-weight:600">{d["tv_ratio"]:.1f}×</span></span>'
         f'</div>'
@@ -1162,8 +1162,8 @@ def render_surge_card(d: dict) -> str:
         f'<div><span style="font-weight:600;font-size:14px">{d["name"]}</span>{fallback_badge}'
         f' <span style="font-size:11px;color:#666">{d["symbol"]}</span></div>'
         f'<div style="text-align:right">'
-        f'<span style="font-size:16px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</span>'
-        f' <span style="font-size:13px;color:{pc}">{ps}{d["pct"]:.2f}%</span></div></div>'
+        f'<span id="price_{safe_id(d["symbol"])}" style="font-size:16px;font-weight:700;color:#e0e0f0">{fmt_price(d["last"])}</span>'
+        f' <span id="dayc_{safe_id(d["symbol"])}" style="font-size:13px;color:{pc}">{ps}{d["pct"]:.2f}%</span></div></div>'
         f'<div style="display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:#666">'
         f'<span>出来高 <span style="color:#ffd600;font-weight:600">{d["vol_ratio"]:.1f}×</span></span>'
         f'<span>RSI <span style="color:{rc}">{rsi_str}</span></span>'
@@ -1290,9 +1290,76 @@ def main() -> None:
     top_tick_syms = {d["symbol"] for d in top_tick}
     high_tick     = [d for d in tick_rows if d["is_high"] and d["symbol"] not in top_tick_syms][:5]
 
-    # データ取得時刻: use the last date from any index row
+    # データ取得時刻
     run_str     = now_jst.strftime("%-m/%-d %H:%M")
     header_note = f'更新: {run_str} JST'
+
+    # ライブ価格更新用シンボルリスト（JS に埋め込む）
+    _live_syms: list = []
+    for d in idx_rows:
+        if not d.get("error") and d.get("last"):
+            _live_syms.append({"sym": d["symbol"], "sid": safe_id(d["symbol"]), "type": "index"})
+    for d in hold_rows:
+        if not d.get("error") and d.get("last"):
+            _live_syms.append({"sym": d["symbol"], "sid": safe_id(d["symbol"]),
+                                "type": "holding", "cost": d.get("cost", 0)})
+    for d in top:
+        if not d.get("error") and d.get("last"):
+            _live_syms.append({"sym": d["symbol"], "sid": safe_id(d["symbol"]), "type": "cand"})
+    for d in surge_cheap + surge_high:
+        _live_syms.append({"sym": d["symbol"], "sid": safe_id(d["symbol"]), "type": "surge"})
+    for d in top_tick + high_tick:
+        _live_syms.append({"sym": d["symbol"], "sid": safe_id(d["symbol"]), "type": "tick"})
+    _seen_live: set = set()
+    _live_syms_dedup = []
+    for s in _live_syms:
+        if s["sid"] not in _seen_live:
+            _seen_live.add(s["sid"])
+            _live_syms_dedup.append(s)
+
+    # JS ブロックを文字列として事前構築（f-string のブレース衝突を回避）
+    _live_js = "var _LS=" + json.dumps(_live_syms_dedup, ensure_ascii=False) + ";"
+    _live_js += r"""
+function _fP(p){
+  if(p<100)return p.toFixed(2);
+  var n=Math.round(p),s=String(n),r='';
+  while(s.length>3){r=','+s.slice(-3)+r;s=s.slice(0,-3);}
+  return s+r;
+}
+function _pC(p){return p>=0?'#ef5350':'#26a69a';}
+async function _fY(sym){
+  try{
+    var r=await fetch('https://query2.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(sym)+'?interval=1d&range=1d&corsDomain=finance.yahoo.com',{mode:'cors'});
+    if(!r.ok)return null;
+    var j=await r.json(),m=j&&j.chart&&j.chart.result&&j.chart.result[0]&&j.chart.result[0].meta;
+    if(!m||!m.regularMarketPrice)return null;
+    var price=m.regularMarketPrice,prev=m.chartPreviousClose||m.previousClose||m.regularMarketPreviousClose||0;
+    return {price,pct:prev?(price/prev-1)*100:0};
+  }catch(e){return null;}
+}
+async function _rP(){
+  var btn=document.querySelector('.rl');
+  if(btn)btn.textContent='⏳ 取得中…';
+  var rs=await Promise.all(_LS.map(function(s){
+    return _fY(s.sym).then(function(d){return {s,d};});
+  }));
+  rs.forEach(function(x){
+    var s=x.s,d=x.d;if(!d)return;
+    var pe=document.getElementById('price_'+s.sid);
+    var de=document.getElementById('dayc_'+s.sid);
+    var ne=document.getElementById('pnl_'+s.sid);
+    if(pe)pe.textContent=_fP(d.price);
+    if(de){de.textContent=(d.pct>=0?'+':'')+d.pct.toFixed(2)+'%';de.style.color=_pC(d.pct);}
+    if(s.type==='holding'&&ne&&s.cost){
+      var pnl=(d.price/s.cost-1)*100;
+      ne.textContent=(pnl>=0?'+':'')+pnl.toFixed(2)+'%';
+      ne.style.color=_pC(pnl);
+    }
+  });
+  var n=new Date(),h=String(n.getHours()).padStart(2,'0'),mi=String(n.getMinutes()).padStart(2,'0');
+  if(btn)btn.textContent='✅ '+h+':'+mi+'更新';
+}
+"""
 
     html = f"""<!DOCTYPE html>
 <html lang="ja">
@@ -1313,6 +1380,7 @@ h2{{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#666;marg
   cursor:pointer;z-index:100;box-shadow:0 2px 8px rgba(0,0,0,.5)}}
 </style>
 <script>
+{_live_js}
 function sw(id,t){{
   [['d','cd_','bd_'],['m','c5_','b5_'],['1','c1_','b1_']].forEach(function(r){{
     var el=document.getElementById(r[1]+id),btn=document.getElementById(r[2]+id);
@@ -1328,11 +1396,12 @@ function sw(id,t){{
     if(Date.now()-t>=ms)location.reload();
   }}
   setInterval(ck,30000);ck();
+  document.addEventListener('DOMContentLoaded',_rP);
 }})();
 </script>
 </head>
 <body>
-<button class="rl" onclick="location.reload()">🔄 更新</button>
+<button class="rl" onclick="_rP()">🔄 更新</button>
 <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0 10px">
   <div style="font-size:20px;font-weight:800;color:#7c83ff">kabu-watch</div>
   <div style="text-align:right">
