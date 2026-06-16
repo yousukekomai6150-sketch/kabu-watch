@@ -17,18 +17,9 @@
     {"symbol": "2914.T", "name": "JT"}
   ],
   "indices": [
-    {"symbol": "^N225", "name": "日経225"},
-    {"symbol": "^TOPIX", "name": "TOPIX"},
-    {"symbol": "1306.T", "name": "TOPIX ETF"},
-    {"symbol": "2516.T", "name": "東証グロースETF"}
+    {"symbol": "^N225", "name": "日経225"}
   ],
   "holdings": [
-    {
-      "symbol": "6730.T",
-      "name": "アクセル",
-      "cost": 1180,
-      "stop_loss": null
-    },
     {
       "symbol": "7012.T",
       "name": "川崎重工業",

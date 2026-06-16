@@ -46,6 +46,20 @@ def fetch_1min(symbol: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _filter_tse_hours(df: pd.DataFrame) -> pd.DataFrame:
+    """東証通常取引時間(9:00〜15:30 JST)のデータのみ残す。夜間・早朝を除外。"""
+    if df.empty:
+        return df
+    try:
+        idx_jst = (df.index.tz_convert(JST) if df.index.tzinfo
+                   else df.index.tz_localize("UTC").tz_convert(JST))
+        total_min = idx_jst.hour * 60 + idx_jst.minute
+        mask = (total_min >= 9 * 60) & (total_min <= 15 * 60 + 30)
+        return df[mask]
+    except Exception:
+        return df
+
+
 # ── Ichimoku ───────────────────────────────────────────────────────────────────
 
 def ichimoku(df: pd.DataFrame) -> pd.DataFrame:
@@ -739,8 +753,8 @@ def build_data(symbol: str, name: str) -> dict:
         return base
     try:
         df  = fetch_ohlcv(symbol, period="1y")
-        df5 = fetch_5min(symbol)
-        df1 = fetch_1min(symbol)
+        df5 = _filter_tse_hours(fetch_5min(symbol))
+        df1 = _filter_tse_hours(fetch_1min(symbol))
 
         if len(df) < 55:
             return base
@@ -1245,11 +1259,11 @@ def main() -> None:
         except Exception as e:
             print(f"[WARN] surge {sym}: {e}", file=sys.stderr)
 
-    # 0件の場合は緩和条件(+0.5%・1.5倍以上)で再スキャン
+    # 0件の場合は緩和条件(+0.5%・1.2倍以上)で再スキャン
     if not surge_rows:
         for sym, nm in candidates_to_check:
             try:
-                d = build_surge_data(sym, nm, min_pct=0.5, min_vol=1.5)
+                d = build_surge_data(sym, nm, min_pct=0.5, min_vol=1.2)
                 if d is not None:
                     d["is_fallback"] = True
                     surge_rows.append(d)
@@ -1422,7 +1436,7 @@ function sw(id,t){{
 
 <h2>注目急騰</h2>
 <div style="background:#1a0505;border:1px solid #cc2200;border-radius:4px;padding:6px 10px;margin-bottom:8px;font-size:11px;color:#ff5533">⚠ 急騰銘柄は値動きが激しく高リスクです。必ず逆指値を設定してください</div>
-<div style="font-size:11px;color:#555;margin-bottom:8px">当日+2%以上・出来高1.5倍以上・時価総額500億円以下 | スコア = 出来高倍率×騰落率</div>
+<div style="font-size:11px;color:#555;margin-bottom:8px">当日+2%以上・出来高1.5倍以上・時価総額500億円以下 | 準候補: +0.5%・1.2倍以上 | スコア = 出来高倍率×騰落率</div>
 {_surge_cheap_html}{_surge_high_html}{_surge_empty_html}
 
 <h2>ティック注目 × チャンス銘柄</h2>
