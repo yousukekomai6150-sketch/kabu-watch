@@ -927,6 +927,89 @@ def build_tick_data(symbol: str, name: str) -> dict | None:
         return None
 
 
+# ── Quote data for docs/scan.html ─────────────────────────────────────────────
+
+def build_quote_data(symbol: str, name: str) -> dict | None:
+    """スクショ診断ページ用の軽量データ。日足のみで指標を算出する。
+
+    ブラウザから Yahoo を直接叩くと CORS で弾かれるため、指標はここ
+    (GitHub Actions) で計算して docs/data/quotes.json に書き出し、
+    ページ側は同一オリジンの JSON を読むだけにする。
+    """
+    try:
+        df = fetch_ohlcv(symbol, period="1y")
+        if len(df) < 55:
+            return None
+
+        ich         = ichimoku(df)
+        score, sigs = calc_signals(ich, df)
+        last        = float(df["Close"].iloc[-1])
+        prev        = float(df["Close"].iloc[-2]) if len(df) > 1 else last
+        pct         = (last / prev - 1) * 100 if prev else 0.0
+        macd_v, macd_s, macd_h = calc_macd(df["Close"])
+        vol_ratio, _ = calc_volume_signal(df)
+
+        # 逆指値推奨: 基準線・雲下限のうち現在値より低い方、無ければ ATR×1.5
+        lat      = ich.iloc[-1]
+        kijun_v  = float(lat["kijun"])  if not pd.isna(lat["kijun"])  else None
+        span_a_v = float(lat["span_a"]) if not pd.isna(lat["span_a"]) else None
+        span_b_v = float(lat["span_b"]) if not pd.isna(lat["span_b"]) else None
+        cloud_bot = (min(span_a_v, span_b_v)
+                     if span_a_v is not None and span_b_v is not None else None)
+        sr_cands = [v for v in [kijun_v, cloud_bot] if v is not None and v < last]
+        if sr_cands:
+            stop_recommend = min(sr_cands)
+        else:
+            atr_v = calc_atr(df)
+            stop_recommend = (last - atr_v * 1.5
+                              if not pd.isna(atr_v) and atr_v > 0 else None)
+
+        def _f(x):
+            if x is None or (isinstance(x, float) and pd.isna(x)):
+                return None
+            return round(float(x), 4)
+
+        return {
+            "name": name,
+            "last": _f(last), "pct": _f(pct),
+            "score": score, "sigs": sigs,
+            "rsi": _f(calc_rsi(df["Close"])),
+            "macd_v": _f(macd_v), "macd_s": _f(macd_s), "macd_h": _f(macd_h),
+            "vol_ratio": _f(vol_ratio), "drawdown": _f(calc_52w_drawdown(df)),
+            "stop_recommend": _f(stop_recommend),
+            "date": _last_date_str(df),
+        }
+    except Exception as e:
+        print(f"[WARN] quote {symbol}: {e}", file=sys.stderr)
+        return None
+
+
+def write_quotes_json(cfg: dict, now_jst: datetime) -> None:
+    """config.json の全銘柄 + scan_universe を対象に quotes.json を書き出す。"""
+    universe: dict = {}
+    for key in ["candidates", "holdings", "tick_candidates",
+                "surge_candidates", "scan_universe"]:
+        for c in cfg.get(key, []):
+            universe.setdefault(c["symbol"], c.get("name", c["symbol"]))
+
+    quotes: dict = {}
+    for sym, nm in universe.items():
+        d = build_quote_data(sym, nm)
+        if d is not None:
+            quotes[sym] = d
+
+    os.makedirs("docs/data", exist_ok=True)
+    out = {
+        "generated_at": now_jst.strftime("%Y-%m-%d %H:%M JST"),
+        "count": len(quotes),
+        "quotes": quotes,
+    }
+    path = "docs/data/quotes.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
+    print(f"[OK] {path} written ({len(quotes)} symbols)")
+
+
 # ── Card renderers ─────────────────────────────────────────────────────────────
 
 def _stats(d: dict) -> str:
@@ -1468,6 +1551,12 @@ if('serviceWorker' in navigator){{
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html)
     print(f"[OK] {out_path} written ({len(html):,} bytes)")
+
+    # スクショ診断ページ用データ（ブラウザは同一オリジンでこれを読む）
+    try:
+        write_quotes_json(cfg, now_jst)
+    except Exception as e:
+        print(f"[WARN] quotes.json: {e}", file=sys.stderr)
 
     # LINE — 大引け後(16:xx JST)の実行時のみ通知。場中10分おきには送らない
     token   = os.environ.get("LINE_CHANNEL_TOKEN", "")
