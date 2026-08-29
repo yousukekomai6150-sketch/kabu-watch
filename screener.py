@@ -1381,6 +1381,13 @@ async function _rP(){
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>kabu-watch</title>
+<meta name="theme-color" content="#080812">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="kabu-watch">
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
 body{{background:#080812;color:#e0e0f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
@@ -1412,12 +1419,18 @@ function sw(id,t){{
   setInterval(ck,30000);ck();
   document.addEventListener('DOMContentLoaded',_rP);
 }})();
+if('serviceWorker' in navigator){{
+  window.addEventListener('load',function(){{navigator.serviceWorker.register('sw.js').catch(function(){{}});}});
+}}
 </script>
 </head>
 <body>
 <button class="rl" onclick="_rP()">🔄 更新</button>
 <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0 10px">
-  <div style="font-size:20px;font-weight:800;color:#7c83ff">kabu-watch</div>
+  <div>
+    <div style="font-size:20px;font-weight:800;color:#7c83ff">kabu-watch</div>
+    <a href="scan.html" style="font-size:11px;color:#7c83ff;text-decoration:none">📷 スクショで売り時診断 →</a>
+  </div>
   <div style="text-align:right">
     <div style="font-size:10px;color:#555;line-height:1.5">{header_note}</div>
     <div id="cntdwn" style="font-size:10px;color:#444;line-height:1.5"></div>
