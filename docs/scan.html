@@ -559,7 +559,15 @@ function parseOcrText(text) {
     // 数量・取得単価は誤読すると診断結果を歪めるため、
     // 「株」「取得単価」といった明示的な手がかりがある場合のみ拾う。
     // 手がかりが無ければ空欄のままユーザーに入力してもらう。
-    const ctx = [lines[i], lines[i + 1] || '', lines[i + 2] || ''].join(' ');
+    // 文脈は「別の銘柄コードが現れる手前まで」に限る。ここを区切らないと
+    // 隣の銘柄の株数・単価を自分の値として拾ってしまう。
+    const ctxLines = [lines[i]];
+    for (let k = i + 1; k <= Math.min(i + 2, lines.length - 1); k++) {
+      const other = codeRe.exec(lines[k]);
+      if (other && other[1].toUpperCase() !== code) break;
+      ctxLines.push(lines[k]);
+    }
+    const ctx = ctxLines.join(' ');
     const qtyM = ctx.match(/([\d.,]+)\s*株/);
 
     seen.add(code);
@@ -583,9 +591,41 @@ function toSymbol(code) {
 // 送信されるのは銘柄コードのみで、数量・取得単価・画像は一切送らない。
 const ENDPOINTS = [
   (u) => u,
+  (u) => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(u),
   (u) => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
-  (u) => 'https://corsproxy.io/?url=' + encodeURIComponent(u),
 ];
+
+// ── 事前計算データ（同一オリジン / CORSが発生しない主経路） ─────────────
+// GitHub Actions の screener.py が docs/data/quotes.json を生成している。
+// ブラウザから Yahoo を直接叩くと CORS で弾かれるため、こちらを優先する。
+let _quotesPromise = null;
+
+function loadQuotes() {
+  if (!_quotesPromise) {
+    _quotesPromise = fetch('data/quotes.json', { cache: 'no-cache' })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+  }
+  return _quotesPromise;
+}
+
+/** 事前計算データから指標を取り出す。未収録なら null。 */
+async function getPrecomputed(symbol) {
+  const j = await loadQuotes();
+  const q = j && j.quotes && j.quotes[symbol];
+  if (!q || q.last == null) return null;
+  return {
+    last: q.last, pct: q.pct, score: q.score, sigs: q.sigs || {},
+    rsi: q.rsi == null ? NaN : q.rsi,
+    macdV: q.macd_v == null ? NaN : q.macd_v,
+    macdS: q.macd_s == null ? NaN : q.macd_s,
+    macdH: q.macd_h == null ? NaN : q.macd_h,
+    volRatio: q.vol_ratio, drawdown: q.drawdown == null ? NaN : q.drawdown,
+    stopRecommend: q.stop_recommend,
+    asOf: q.date || (j && j.generated_at) || '',
+    name: q.name || '',
+  };
+}
 
 let _workingEndpoint = null;   // 一度成功した経路を以降の銘柄でも使い回す
 
@@ -932,6 +972,20 @@ async function analyzeHolding(row) {
   const symbol = toSymbol(row.code);
   const cost = row.cost !== '' && row.cost != null ? parseFloat(row.cost) : null;
   const qty = row.qty !== '' && row.qty != null ? parseFloat(row.qty) : null;
+
+  // まず同一オリジンの事前計算データ。無い銘柄だけ Yahoo に直接取りにいく。
+  try {
+    const pre = await getPrecomputed(symbol);
+    if (pre) {
+      const pnlPct = cost ? (pre.last / cost - 1) * 100 : null;
+      return {
+        ...row, symbol, cost, qty, error: false, d: pre, pnlPct,
+        name: row.name || pre.name,
+        verdict: makeVerdict(pre, pnlPct), advice: makeAdviceComment(pre),
+      };
+    }
+  } catch (e) { /* 事前計算データが無ければ下のライブ取得に進む */ }
+
   try {
     const candles = await fetchOHLCV(symbol);
     if (candles.length < 55) {
@@ -953,7 +1007,12 @@ async function analyzeHolding(row) {
       verdict: makeVerdict(d, pnlPct), advice: makeAdviceComment(d),
     };
   } catch (e) {
-    return { ...row, symbol, cost, qty, error: true, errorMsg: (e && e.message) || String(e) };
+    return {
+      ...row, symbol, cost, qty, error: true,
+      errorMsg: `この銘柄はまだ事前計算データに含まれておらず、直接取得もできませんでした`
+        + `（${(e && e.message) || e}）。config.json の scan_universe に ${symbol} を追加すると、`
+        + `次回の自動更新から診断できるようになります。`,
+    };
   }
 }
 
