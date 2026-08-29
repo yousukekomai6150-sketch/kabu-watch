@@ -523,8 +523,20 @@ function parseOcrDocument(data) {
     });
     if (idx < 0) continue;
     for (let k = idx; k <= Math.min(idx + 2, rows.length - 1); k++) {
-      if (entry.qty == null && cols.qty != null) entry.qty = valueAtColumn(rows[k], cols.qty, tol);
-      if (entry.cost == null && cols.cost != null) entry.cost = valueAtColumn(rows[k], cols.cost, tol);
+      // 別の銘柄の行に入ったら打ち切る。ここで止めないと隣の銘柄の
+      // 株数・単価を自分の値として拾ってしまう。
+      if (k > idx) {
+        const other = codeRe.exec(rows[k].text);
+        if (other && other[1].toUpperCase() !== entry.code) break;
+      }
+      if (entry.qty == null && cols.qty != null) {
+        const v = valueAtColumn(rows[k], cols.qty, tol);
+        if (v != null) entry.qty = v;
+      }
+      if (entry.cost == null && cols.cost != null) {
+        const v = valueAtColumn(rows[k], cols.cost, tol);
+        if (v != null) entry.cost = v;
+      }
     }
   }
   return byLine;
@@ -979,8 +991,10 @@ async function analyzeHolding(row) {
     if (pre) {
       const pnlPct = cost ? (pre.last / cost - 1) * 100 : null;
       return {
+        // 銘柄コードから引いた正式名称を優先する。OCRの読み取り名
+        // (「0 M」など)より確実なため。
         ...row, symbol, cost, qty, error: false, d: pre, pnlPct,
-        name: row.name || pre.name,
+        name: pre.name || row.name,
         verdict: makeVerdict(pre, pnlPct), advice: makeAdviceComment(pre),
       };
     }
@@ -1028,6 +1042,14 @@ async function runAnalysis() {
   resultsEl.innerHTML = '';
   try {
     const results = await Promise.all(validRows.map(analyzeHolding));
+    // 正式名称が判明した銘柄は入力欄の表示も揃える
+    let renamed = false;
+    for (const r of results) {
+      if (r.error || !r.name) continue;
+      const row = state.rows.find((x) => x.code === r.code);
+      if (row && row.name !== r.name) { row.name = r.name; renamed = true; }
+    }
+    if (renamed) renderRows();
     resultsEl.innerHTML = results.map(renderResultCard).join('');
     const okCount = results.filter((r) => !r.error).length;
     statusEl.textContent = `診断完了: ${okCount}/${results.length}銘柄`;
