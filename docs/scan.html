@@ -61,10 +61,13 @@ td{padding:3px 4px}
 <div class="card">
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px">
     <label class="btn primary" style="display:inline-block">
-      📷 スクショを選択
-      <input id="fileInput" type="file" accept="image/*" capture="environment" style="display:none">
+      🖼 スクショを選択
+      <input id="fileInput" type="file" accept="image/*" style="display:none">
     </label>
     <button class="btn ghost" onclick="addRow()">＋ 手入力で追加</button>
+  </div>
+  <div class="hint" style="margin-bottom:4px">
+    タップ後に表示されるメニューから「<b>フォトライブラリ</b>」を選び、保存済みのスクショを指定してください。
   </div>
   <img id="preview">
   <div id="ocrProgressWrap" class="progress-wrap" style="display:none">
