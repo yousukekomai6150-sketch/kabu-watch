@@ -54,8 +54,9 @@ td{padding:3px 4px}
 <h2>📷 スクショで売り時診断</h2>
 <div class="card hint">
   SBI証券アプリの「保有証券」画面をスクショして読み込むと、銘柄コードを自動認識します。
-  画像はこの端末（ブラウザ）内だけで処理され、外部サーバーには一切送信されません。
-  株価・指標データの取得にのみインターネット通信（Yahoo!ファイナンス）を使います。
+  <b>スクショ画像・数量・取得単価は端末（ブラウザ）内だけで処理され、外部には一切送信されません。</b>
+  株価の取得のため、<b>銘柄コードのみ</b>が Yahoo!ファイナンスへ送信されます（直接接続できない場合は
+  公開のCORS中継サービスを経由します）。
 </div>
 
 <div class="card">
@@ -74,11 +75,22 @@ td{padding:3px 4px}
     <div id="ocrProgressBar" class="progress-bar"></div>
   </div>
   <div id="ocrStatus" class="hint"></div>
+  <div id="rawOcrBox" style="display:none;margin-top:8px;border-top:1px solid #1a1a3a;padding-top:8px">
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <button id="rawOcrBtn" class="btn ghost small" onclick="toggleRawOcr()">認識テキストを隠す</button>
+      <button id="rawOcrCopy" class="btn ghost small" onclick="copyRawOcr()">テキストをコピー</button>
+    </div>
+    <pre id="rawOcrText" style="background:#0c0c1a;border:1px solid #2a2a44;border-radius:4px;
+      padding:8px;margin-top:6px;font-size:10px;color:#8a8aa0;white-space:pre-wrap;
+      word-break:break-all;max-height:240px;overflow:auto"></pre>
+  </div>
 </div>
 
 <div id="tableCard" class="card" style="display:none">
   <div class="hint" style="margin-bottom:8px">
-    コード・銘柄名はOCRの自動認識結果です。<span style="color:#ff9944">オレンジ枠の数量・取得単価はOCRの推定値</span>なので、実際の値と必ず照合・修正してください。
+    コード・銘柄名はOCRの自動認識結果です（銘柄名が崩れていても診断には影響しません）。
+    <b style="color:#ff9944">取得単価は必ずご自身で入力してください</b> — 誤った単価は損益と売り時判定を狂わせるため、
+    OCRで確実に読み取れなかった場合は空欄のままにしてあります。
   </div>
   <table>
     <thead><tr><th>コード</th><th>銘柄名</th><th>数量</th><th>取得単価</th><th></th></tr></thead>
@@ -177,11 +189,12 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
       },
     });
     wrapEl.style.display = 'none';
+    showRawOcr(data.text || '');
     const parsed = parseOcrText(data.text || '');
     if (!parsed.length) {
       statusEl.textContent = '銘柄コードを自動認識できませんでした。「＋ 手入力で追加」から入力してください。';
     } else {
-      statusEl.textContent = `${parsed.length}件の銘柄コードを認識しました。数量・取得単価を確認してください。`;
+      statusEl.textContent = `${parsed.length}件の銘柄コードを認識しました。取得単価を入力してください。`;
       for (const p of parsed) {
         if (state.rows.some((r) => r.code === p.code)) continue;
         addRow({ code: p.code, name: p.name, qty: p.qty ?? '', cost: p.cost ?? '', guess: p.qty != null || p.cost != null });
@@ -192,6 +205,35 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
     statusEl.textContent = 'OCR処理に失敗しました: ' + (err.message || err) + ' 「＋ 手入力で追加」から手動で入力できます。';
   }
 });
+
+// OCR が実際に読み取った生テキスト。認識がずれたときの原因調査用に表示できる。
+function showRawOcr(text) {
+  const box = document.getElementById('rawOcrBox');
+  const pre = document.getElementById('rawOcrText');
+  if (!box || !pre) return;
+  pre.textContent = text.trim() || '(テキストを検出できませんでした)';
+  box.style.display = 'block';
+}
+
+function toggleRawOcr() {
+  const pre = document.getElementById('rawOcrText');
+  const btn = document.getElementById('rawOcrBtn');
+  const open = pre.style.display !== 'none';
+  pre.style.display = open ? 'none' : 'block';
+  btn.textContent = open ? '認識テキストを表示' : '認識テキストを隠す';
+}
+
+async function copyRawOcr() {
+  const t = document.getElementById('rawOcrText').textContent;
+  const btn = document.getElementById('rawOcrCopy');
+  try {
+    await navigator.clipboard.writeText(t);
+    btn.textContent = '✅ コピーしました';
+  } catch (e) {
+    btn.textContent = '⚠ コピーできません（長押しで選択してください）';
+  }
+  setTimeout(() => { btn.textContent = 'テキストをコピー'; }, 2500);
+}
 
 function ocrStatusLabel(status) {
   const map = {
@@ -227,10 +269,38 @@ function downscaleImage(file, maxDim) {
 }
 
 // ── OCR text parsing ────────────────────────────────────────────────────
+
+/** 全角→半角に直し、桁区切りを取り除いて数値化する。判定できなければ null。 */
+function normalizeNumber(raw) {
+  let s = String(raw)
+    .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/[,\s]/g, '');
+  // OCR は桁区切りのカンマをピリオドと誤読しやすい (2,766 → 2.766)。
+  // ピリオドの直後がちょうど3桁で終わる場合のみ桁区切りとみなして除去し、
+  // 1.67 のような本物の小数はそのまま残す。
+  s = s.replace(/\.(?=\d{3}(?:\D|$))/g, '');
+  const n = parseFloat(s);
+  return isNaN(n) || !isFinite(n) ? null : n;
+}
+
+/** 行から金額・株数・損益などを取り除き、銘柄名らしい部分だけ残す。 */
+function cleanName(line) {
+  return String(line)
+    .replace(/[\d.,]+\s*[円株%]/g, ' ')   // 金額・株数・率
+    .replace(/[+\-±][\d.,]+/g, ' ')       // 損益 (+13,300 / -1,880)
+    .replace(/[\d.,]{3,}/g, ' ')          // 残った桁数の多い数字
+    .replace(/東証[PSGN]?|名証|福証|札証|現物|特定|一般|NISA/g, ' ')
+    .replace(/[|｜[\]()（）:：]/g, ' ')
+    .replace(/(^|\s)[円株%＋+\-±](?=\s|$)/g, ' ')  // 単位・符号だけ残ったもの
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 20);
+}
+
 function parseOcrText(text) {
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  const codeRe = /(?:^|[^0-9A-Za-z])([0-9][0-9A-Za-z]{3})(?:$|[^0-9A-Za-z])/;
-  const numRe = /[0-9][0-9,]*(?:\.[0-9]+)?/g;
+  // 東証の銘柄コードは4桁数字、または数字3桁+英字1桁 (例 285A)
+  const codeRe = /(?:^|[^0-9A-Za-z])([0-9]{3}[0-9A-Za-z])(?:$|[^0-9A-Za-z])/;
   const jpRe = /[぀-ゟ゠-ヿ一-鿿]/;
   const results = [];
   const seen = new Set();
@@ -241,23 +311,30 @@ function parseOcrText(text) {
     const code = m[1].toUpperCase();
     if (seen.has(code)) continue;
 
-    // 直近の日本語を含む行を銘柄名候補とする
-    let name = '';
-    for (let j = i - 1; j >= Math.max(0, i - 3); j--) {
-      if (jpRe.test(lines[j]) && !codeRe.test(lines[j])) { name = lines[j]; break; }
+    // 銘柄名: コードと同じ行を優先し、なければ直前3行から探す
+    let name = cleanName(lines[i].replace(m[1], ' '));
+    if (name.length < 2) {
+      for (let j = i - 1; j >= Math.max(0, i - 3); j--) {
+        const cand = cleanName(lines[j]);
+        if (cand.length >= 2 && (jpRe.test(cand) || /[A-Za-z]{2,}/.test(cand))) {
+          name = cand;
+          break;
+        }
+      }
     }
 
-    // コード自身の行 + 次の行から数値候補を拾い、先頭2つを [数量, 取得単価] の推定値とする
-    const context = (lines[i].replace(m[0], ' ') + ' ' + (lines[i + 1] || ''));
-    const nums = (context.match(numRe) || [])
-      .map((s) => parseFloat(s.replace(/,/g, '')))
-      .filter((n) => !isNaN(n) && n > 0);
+    // 数量・取得単価は誤読すると診断結果を歪めるため、
+    // 「株」「取得単価」といった明示的な手がかりがある場合のみ拾う。
+    // 手がかりが無ければ空欄のままユーザーに入力してもらう。
+    const ctx = [lines[i], lines[i + 1] || '', lines[i + 2] || ''].join(' ');
+    const qtyM = ctx.match(/([\d.,]+)\s*株/);
+    const costM = ctx.match(/取得単価[^\d]{0,4}([\d.,]+)/);
 
     seen.add(code);
     results.push({
       code, name,
-      qty: nums.length >= 1 ? nums[0] : null,
-      cost: nums.length >= 2 ? nums[1] : null,
+      qty: qtyM ? normalizeNumber(qtyM[1]) : null,
+      cost: costM ? normalizeNumber(costM[1]) : null,
     });
   }
   return results;
@@ -269,11 +346,39 @@ function toSymbol(code) {
   return /^[0-9][0-9A-Z]{3}$/.test(c) ? c + '.T' : c;
 }
 
+// Yahoo の chart API はブラウザから直接叩くと CORS で弾かれる環境がある
+// (iOS Safari で "Load failed")。まず直接、ダメなら公開CORS中継を順に試す。
+// 送信されるのは銘柄コードのみで、数量・取得単価・画像は一切送らない。
+const ENDPOINTS = [
+  (u) => u,
+  (u) => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+  (u) => 'https://corsproxy.io/?url=' + encodeURIComponent(u),
+];
+
+let _workingEndpoint = null;   // 一度成功した経路を以降の銘柄でも使い回す
+
+async function fetchYahooJson(url) {
+  const order = _workingEndpoint
+    ? [_workingEndpoint, ...ENDPOINTS.filter((e) => e !== _workingEndpoint)]
+    : ENDPOINTS;
+  const errors = [];
+  for (const wrap of order) {
+    try {
+      const res = await fetch(wrap(url), { mode: 'cors', credentials: 'omit' });
+      if (!res.ok) { errors.push('HTTP ' + res.status); continue; }
+      const j = await res.json();
+      _workingEndpoint = wrap;
+      return j;
+    } catch (e) {
+      errors.push((e && e.message) || String(e));
+    }
+  }
+  throw new Error('株価サーバーに接続できません (' + errors.join(' / ') + ')');
+}
+
 async function fetchOHLCV(symbol) {
   const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1y&corsDomain=finance.yahoo.com`;
-  const res = await fetch(url, { mode: 'cors' });
-  if (!res.ok) throw new Error('通信エラー (' + res.status + ')');
-  const j = await res.json();
+  const j = await fetchYahooJson(url);
   const result = j && j.chart && j.chart.result && j.chart.result[0];
   if (!result) throw new Error((j.chart && j.chart.error && j.chart.error.description) || '銘柄が見つかりません');
   const ts = result.timestamp || [];
