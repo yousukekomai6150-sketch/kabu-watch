@@ -69,8 +69,8 @@ td{padding:3px 4px}
   </div>
   <div class="hint" style="margin-bottom:4px">
     タップ後のメニューから「<b>フォトライブラリ</b>」を選択。
-    <b>複数枚をまとめて選べます</b>（例: 銘柄一覧の画面と、数量・取得単価が見える画面）。
-    同じ銘柄コードの情報は自動で1行にまとめられます。
+    SBI証券の<b>「口座管理 → 保有証券」画面</b>なら、1枚で取得単価と株数まで読み取れます。
+    銘柄が画面に収まらない場合は<b>スクロールして複数枚</b>選べば、同じ銘柄コードは自動で1行にまとまります。
   </div>
   <img id="preview">
   <div id="ocrProgressWrap" class="progress-wrap" style="display:none">
@@ -90,9 +90,10 @@ td{padding:3px 4px}
 
 <div id="tableCard" class="card" style="display:none">
   <div class="hint" style="margin-bottom:8px">
-    コード・銘柄名はOCRの自動認識結果です（銘柄名が崩れていても診断には影響しません）。
-    <b style="color:#ff9944">取得単価は必ずご自身で入力してください</b> — 誤った単価は損益と売り時判定を狂わせるため、
-    OCRで確実に読み取れなかった場合は空欄のままにしてあります。
+    銘柄名が崩れていても診断には影響しません。
+    <b style="color:#ff9944">オレンジ枠はOCRの読み取り値</b>です。取得単価は画面の損益率と突き合わせて検算しており、
+    数量は評価損益から逆算していますが、<b>念のため実際の値とご確認ください</b>。
+    確実に読み取れなかった項目は、誤った値で診断しないよう空欄にしてあります。
   </div>
   <table>
     <thead><tr><th>コード</th><th>銘柄名</th><th>数量</th><th>取得単価</th><th></th></tr></thead>
@@ -327,14 +328,84 @@ function normalizeNumber(raw) {
 function cleanName(line) {
   return String(line)
     .replace(/[\d.,]+\s*[円株%]/g, ' ')   // 金額・株数・率
-    .replace(/[+\-±][\d.,]+/g, ' ')       // 損益 (+13,300 / -1,880)
+    .replace(/[+\-±−–—][\d.,]+/g, ' ')    // 損益 (+13,300 / −1,880)
     .replace(/[\d.,]{3,}/g, ' ')          // 残った桁数の多い数字
-    .replace(/東証[PSGN]?|名証|福証|札証|現物|特定|一般|NISA/g, ' ')
-    .replace(/[|｜[\]()（）:：]/g, ' ')
-    .replace(/(^|\s)[円株%＋+\-±](?=\s|$)/g, ' ')  // 単位・符号だけ残ったもの
+    .replace(/東証[PSGN]?|名証|福証|札証|現物|特定|一般|NISA?|NIS|保護|代用|預り|保有/g, ' ')
+    .replace(/[|｜[\]()（）:：/／@]/g, ' ')
+    .replace(/(^|\s)[円株%＋+\-±−–—](?=\s|$)/g, ' ')  // 単位・符号だけ残ったもの
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 20);
+}
+
+// ── SBI証券「保有証券」画面の専用パーサー ──────────────────────────────
+// この画面は1銘柄が2行で構成される:
+//   1行目  銘柄名          現在値円   評価損益円      (例 "1 HI 2.766 円 −1.880 円")
+//   2行目  コード 預り区分  取得単価円 評価損益率%     (例 "7013 NIS 保護 2.813.0 円 −1.67%")
+// 数量は画面に無いが、評価損益 ÷ (現在値 − 取得単価) で復元できる。
+// さらに評価損益率と突き合わせて、読み取りが正しいか検算する。
+
+/** 「〜円」の形で現れる数値を、符号付きで順番に取り出す。 */
+function numbersBeforeYen(line) {
+  const re = /([+\-−–—±]?)\s*([0-9０-９][0-9０-９.,]*)\s*円/g;
+  const out = [];
+  let m;
+  while ((m = re.exec(line))) {
+    const v = normalizeNumber(m[2]);
+    if (v == null) continue;
+    out.push({ value: v, sign: /[-−–—]/.test(m[1]) ? -1 : 1 });
+  }
+  return out;
+}
+
+/** 「−1.67%」のような騰落率を取り出す。無ければ null。 */
+function percentInLine(line) {
+  const m = line.match(/([+\-−–—±]?)\s*([0-9０-９][0-9０-９.,]*)\s*%/);
+  if (!m) return null;
+  const v = normalizeNumber(m[2]);
+  if (v == null) return null;
+  return /[-−–—]/.test(m[1]) ? -v : v;
+}
+
+function parseSbiHoldings(text) {
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const codeLineRe = /^([0-9]{3}[0-9A-Za-z])(?![0-9A-Za-z])/;
+  const results = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const cm = codeLineRe.exec(lines[i]);
+    if (!cm) continue;
+    const yenOnCodeLine = numbersBeforeYen(lines[i]);
+    if (!yenOnCodeLine.length) continue;      // 取得単価が読めない行は対象外
+
+    const code = cm[1].toUpperCase();
+    let cost = yenOnCodeLine[0].value;
+    const rate = percentInLine(lines[i]);
+
+    // 直前の行 = 銘柄名 / 現在値 / 評価損益
+    const prev = lines[i - 1] || '';
+    const yenOnNameLine = numbersBeforeYen(prev);
+    const last = yenOnNameLine.length >= 1 ? yenOnNameLine[0].value : null;
+    const pl = yenOnNameLine.length >= 2
+      ? yenOnNameLine[1].value * yenOnNameLine[1].sign : null;
+
+    // 検算: 現在値と取得単価から求めた騰落率が画面の表示と一致するか。
+    // ずれるなら桁を誤読しているので、誤った単価を渡すより空欄にする。
+    if (last != null && rate != null && cost > 0) {
+      const calc = (last / cost - 1) * 100;
+      if (Math.abs(calc - rate) > 0.5) cost = null;
+    }
+
+    // 数量 = 評価損益 ÷ 1株あたりの損益。整数に十分近いときだけ採用する。
+    let qty = null;
+    if (cost != null && last != null && pl != null && Math.abs(last - cost) > 1e-9) {
+      const q = pl / (last - cost);
+      if (q > 0 && q < 1e9 && Math.abs(q - Math.round(q)) < 0.02) qty = Math.round(q);
+    }
+
+    results.push({ code, name: cleanName(prev), qty, cost });
+  }
+  return results;
 }
 
 const QTY_LABELS  = ['保有数量', '保有株数', '数量', '株数'];
@@ -417,9 +488,25 @@ function findLabeledNumber(ctx, labels) {
  * 拾い、見つからなければラベル+数値の並びから拾う。どちらも駄目なら空欄。
  */
 function parseOcrDocument(data) {
+  const text = data.text || '';
   const words = extractWords(data);
   const rows = words.length ? groupRows(words) : [];
-  const byLine = parseOcrText(data.text || '');
+
+  // SBIの保有証券画面はレイアウトが確定しているので専用パーサーを優先し、
+  // そこで取れなかった銘柄・項目だけを汎用パーサーで補う。
+  const byLine = parseSbiHoldings(text);
+  const seen = new Set(byLine.map((e) => e.code));
+  for (const g of parseOcrText(text)) {
+    const hit = byLine.find((e) => e.code === g.code);
+    if (!hit) {
+      byLine.push(g);
+      seen.add(g.code);
+    } else {
+      if (!hit.name && g.name) hit.name = g.name;
+      if (hit.qty == null && g.qty != null) hit.qty = g.qty;
+      if (hit.cost == null && g.cost != null) hit.cost = g.cost;
+    }
+  }
   if (!rows.length) return byLine;
 
   const cols = findColumns(rows);
