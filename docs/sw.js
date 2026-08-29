@@ -5,7 +5,7 @@
 // since prices must stay fresh and CDN assets are cached by the browser
 // HTTP cache / Tesseract's own IndexedDB cache already.
 
-const CACHE = "kabu-watch-shell-v1";
+const CACHE = "kabu-watch-shell-v2";
 const SHELL = [
   "./scan.html",
   "./manifest.webmanifest",
