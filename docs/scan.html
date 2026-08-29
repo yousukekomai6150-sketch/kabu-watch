@@ -62,13 +62,15 @@ td{padding:3px 4px}
 <div class="card">
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px">
     <label class="btn primary" style="display:inline-block">
-      🖼 スクショを選択
-      <input id="fileInput" type="file" accept="image/*" style="display:none">
+      🖼 スクショを選択（複数可）
+      <input id="fileInput" type="file" accept="image/*" multiple style="display:none">
     </label>
     <button class="btn ghost" onclick="addRow()">＋ 手入力で追加</button>
   </div>
   <div class="hint" style="margin-bottom:4px">
-    タップ後に表示されるメニューから「<b>フォトライブラリ</b>」を選び、保存済みのスクショを指定してください。
+    タップ後のメニューから「<b>フォトライブラリ</b>」を選択。
+    <b>複数枚をまとめて選べます</b>（例: 銘柄一覧の画面と、数量・取得単価が見える画面）。
+    同じ銘柄コードの情報は自動で1行にまとめられます。
   </div>
   <img id="preview">
   <div id="ocrProgressWrap" class="progress-wrap" style="display:none">
@@ -164,11 +166,11 @@ function renderRows() {
 
 // ── image capture → OCR ─────────────────────────────────────────────────
 document.getElementById('fileInput').addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
+  const files = Array.from(e.target.files || []);
+  if (!files.length) return;
+
   const preview = document.getElementById('preview');
-  const url = URL.createObjectURL(file);
-  preview.src = url;
+  preview.src = URL.createObjectURL(files[0]);
   preview.style.display = 'block';
 
   const statusEl = document.getElementById('ocrStatus');
@@ -176,35 +178,73 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
   const barEl = document.getElementById('ocrProgressBar');
   wrapEl.style.display = 'block';
   barEl.style.width = '0%';
-  statusEl.textContent = 'OCRエンジンを準備中…（初回は数十秒かかります）';
 
+  const rawTexts = [];
+  let merged = 0;
   try {
-    const canvas = await downscaleImage(file, 1800);
-    const { data } = await Tesseract.recognize(canvas, 'jpn+eng', {
-      logger: (m) => {
-        if (m.status && typeof m.progress === 'number') {
-          barEl.style.width = Math.round(m.progress * 100) + '%';
-          statusEl.textContent = `${ocrStatusLabel(m.status)} ${Math.round(m.progress * 100)}%`;
-        }
-      },
-    });
+    for (let i = 0; i < files.length; i++) {
+      const label = files.length > 1 ? `[${i + 1}/${files.length}] ` : '';
+      statusEl.textContent = label + 'OCRエンジンを準備中…（初回は数十秒かかります）';
+      const canvas = await downscaleImage(files[i], 1800);
+      const { data } = await Tesseract.recognize(canvas, 'jpn+eng', {
+        logger: (m) => {
+          if (m.status && typeof m.progress === 'number') {
+            barEl.style.width = Math.round(m.progress * 100) + '%';
+            statusEl.textContent = `${label}${ocrStatusLabel(m.status)} ${Math.round(m.progress * 100)}%`;
+          }
+        },
+      });
+      rawTexts.push(`──── 画像 ${i + 1} ────\n${(data.text || '').trim()}`);
+      merged += mergeParsedRows(parseOcrDocument(data));
+    }
     wrapEl.style.display = 'none';
-    showRawOcr(data.text || '');
-    const parsed = parseOcrText(data.text || '');
-    if (!parsed.length) {
+    showRawOcr(rawTexts.join('\n\n'));
+
+    if (!state.rows.length) {
       statusEl.textContent = '銘柄コードを自動認識できませんでした。「＋ 手入力で追加」から入力してください。';
     } else {
-      statusEl.textContent = `${parsed.length}件の銘柄コードを認識しました。取得単価を入力してください。`;
-      for (const p of parsed) {
-        if (state.rows.some((r) => r.code === p.code)) continue;
-        addRow({ code: p.code, name: p.name, qty: p.qty ?? '', cost: p.cost ?? '', guess: p.qty != null || p.cost != null });
-      }
+      const missing = state.rows.filter((r) => r.cost === '' || r.cost == null).length;
+      statusEl.textContent = `${files.length}枚から${merged}件の銘柄を認識しました。`
+        + (missing ? `うち${missing}件は取得単価を読み取れなかったので入力してください。` : '取得単価も読み取れました。値をご確認ください。');
     }
   } catch (err) {
     wrapEl.style.display = 'none';
+    if (rawTexts.length) showRawOcr(rawTexts.join('\n\n'));
     statusEl.textContent = 'OCR処理に失敗しました: ' + (err.message || err) + ' 「＋ 手入力で追加」から手動で入力できます。';
   }
 });
+
+/**
+ * 解析結果を既存の表に統合する。同じ銘柄コードの行があれば、
+ * まだ空いている項目だけを埋める（2枚目以降で数量・取得単価を補完する用途）。
+ * 戻り値は新規追加した銘柄数。
+ */
+function mergeParsedRows(parsed) {
+  let added = 0;
+  for (const p of parsed) {
+    const existing = state.rows.find((r) => r.code === p.code);
+    if (existing) {
+      if (!existing.name && p.name) existing.name = p.name;
+      if ((existing.qty === '' || existing.qty == null) && p.qty != null) {
+        existing.qty = p.qty;
+        existing.guess = true;
+      }
+      if ((existing.cost === '' || existing.cost == null) && p.cost != null) {
+        existing.cost = p.cost;
+        existing.guess = true;
+      }
+    } else {
+      added++;
+      state.rows.push({
+        code: p.code, name: p.name,
+        qty: p.qty ?? '', cost: p.cost ?? '',
+        guess: p.qty != null || p.cost != null,
+      });
+    }
+  }
+  renderRows();
+  return added;
+}
 
 // OCR が実際に読み取った生テキスト。認識がずれたときの原因調査用に表示できる。
 function showRawOcr(text) {
@@ -297,6 +337,112 @@ function cleanName(line) {
     .slice(0, 20);
 }
 
+const QTY_LABELS  = ['保有数量', '保有株数', '数量', '株数'];
+const COST_LABELS = ['平均取得単価', '取得単価', '取得価額', '取得価格', '取得値'];
+
+/** Tesseract の結果構造から単語(bbox付き)を平坦に取り出す。 */
+function extractWords(data) {
+  if (Array.isArray(data.words) && data.words.length) return data.words;
+  const out = [];
+  const walk = (nodes) => {
+    for (const n of nodes || []) {
+      if (Array.isArray(n.words)) out.push(...n.words);
+      if (Array.isArray(n.lines)) walk(n.lines);
+      if (Array.isArray(n.paragraphs)) walk(n.paragraphs);
+    }
+  };
+  walk(data.blocks);
+  return out.filter((w) => w && w.bbox);
+}
+
+/** 単語をY座標で行にまとめ、各行内はX順に並べる。 */
+function groupRows(words) {
+  const rows = [];
+  for (const w of [...words].sort((a, b) => a.bbox.y0 - b.bbox.y0)) {
+    const cy = (w.bbox.y0 + w.bbox.y1) / 2;
+    const h = Math.max(w.bbox.y1 - w.bbox.y0, 1);
+    let row = rows.find((r) => Math.abs(r.cy - cy) < Math.max(h * 0.6, 8));
+    if (!row) { row = { cy, words: [] }; rows.push(row); }
+    row.words.push(w);
+    row.cy = row.words.reduce((s, x) => s + (x.bbox.y0 + x.bbox.y1) / 2, 0) / row.words.length;
+  }
+  for (const r of rows) {
+    r.words.sort((a, b) => a.bbox.x0 - b.bbox.x0);
+    r.text = r.words.map((w) => w.text).join(' ');
+  }
+  return rows.sort((a, b) => a.cy - b.cy);
+}
+
+/** 表のヘッダー(「数量」「取得単価」)を探し、その列のX中心を返す。 */
+function findColumns(rows) {
+  const cols = {};
+  for (const row of rows) {
+    for (const w of row.words) {
+      const t = String(w.text || '').replace(/\s/g, '');
+      const cx = (w.bbox.x0 + w.bbox.x1) / 2;
+      if (cols.qty == null && QTY_LABELS.includes(t)) cols.qty = cx;
+      if (cols.cost == null && COST_LABELS.includes(t)) cols.cost = cx;
+    }
+  }
+  return cols;
+}
+
+/** 指定X座標にもっとも近い数値トークンを行から拾う。 */
+function valueAtColumn(row, cx, tol) {
+  let best = null, bestD = Infinity;
+  for (const w of row.words) {
+    const n = normalizeNumber(w.text);
+    if (n == null || n <= 0) continue;
+    const wcx = (w.bbox.x0 + w.bbox.x1) / 2;
+    const d = Math.abs(wcx - cx);
+    if (d < bestD && d <= tol) { bestD = d; best = n; }
+  }
+  return best;
+}
+
+/** 「取得単価 2,785円」のようなラベル+数値の並びから値を取り出す。 */
+function findLabeledNumber(ctx, labels) {
+  for (const lab of labels) {
+    const m = ctx.match(new RegExp(lab + '[^0-9０-９]{0,6}([0-9０-９][0-9０-９.,]*)'));
+    if (m) {
+      const n = normalizeNumber(m[1]);
+      if (n != null && n > 0) return n;
+    }
+  }
+  return null;
+}
+
+/**
+ * OCR結果から銘柄を抽出する。列ヘッダーが見つかれば列位置で数量・取得単価を
+ * 拾い、見つからなければラベル+数値の並びから拾う。どちらも駄目なら空欄。
+ */
+function parseOcrDocument(data) {
+  const words = extractWords(data);
+  const rows = words.length ? groupRows(words) : [];
+  const byLine = parseOcrText(data.text || '');
+  if (!rows.length) return byLine;
+
+  const cols = findColumns(rows);
+  const pageWidth = Math.max(...words.map((w) => w.bbox.x1), 1);
+  const tol = pageWidth * 0.12;
+  const codeRe = /(?:^|[^0-9A-Za-z])([0-9]{3}[0-9A-Za-z])(?:$|[^0-9A-Za-z])/;
+
+  for (const entry of byLine) {
+    if (entry.qty != null && entry.cost != null) continue;
+    // その銘柄コードが写っている行を探し、直下2行までを同一銘柄の情報とみなす
+    const idx = rows.findIndex((r) => {
+      const m = codeRe.exec(r.text);
+      return m && m[1].toUpperCase() === entry.code;
+    });
+    if (idx < 0) continue;
+    for (let k = idx; k <= Math.min(idx + 2, rows.length - 1); k++) {
+      if (entry.qty == null && cols.qty != null) entry.qty = valueAtColumn(rows[k], cols.qty, tol);
+      if (entry.cost == null && cols.cost != null) entry.cost = valueAtColumn(rows[k], cols.cost, tol);
+    }
+  }
+  return byLine;
+}
+
 function parseOcrText(text) {
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   // 東証の銘柄コードは4桁数字、または数字3桁+英字1桁 (例 285A)
@@ -328,13 +474,12 @@ function parseOcrText(text) {
     // 手がかりが無ければ空欄のままユーザーに入力してもらう。
     const ctx = [lines[i], lines[i + 1] || '', lines[i + 2] || ''].join(' ');
     const qtyM = ctx.match(/([\d.,]+)\s*株/);
-    const costM = ctx.match(/取得単価[^\d]{0,4}([\d.,]+)/);
 
     seen.add(code);
     results.push({
       code, name,
-      qty: qtyM ? normalizeNumber(qtyM[1]) : null,
-      cost: costM ? normalizeNumber(costM[1]) : null,
+      qty: findLabeledNumber(ctx, QTY_LABELS) ?? (qtyM ? normalizeNumber(qtyM[1]) : null),
+      cost: findLabeledNumber(ctx, COST_LABELS),
     });
   }
   return results;
