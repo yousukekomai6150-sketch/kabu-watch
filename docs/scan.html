@@ -896,11 +896,14 @@ function swingPlan(d, cost) {
 
   const profit = (cost != null && cost > 0) ? last - cost : null;
   const rMultiple = (profit != null && R) ? profit / R : null;
-  return {
-    R, stop, profit, rMultiple,
-    target2: (cost != null && R) ? cost + R * 2 : null,
-    target3: (cost != null && R) ? cost + R * 3 : null,
-  };
+
+  // 利確ライン: 取得単価から 2R / 3R。上値の節目(直近20日高値)は
+  // 実際に上昇が止まりやすい水準なので、目標とは別に併記する。
+  const target2 = (cost != null && R) ? cost + R * 2 : null;
+  const target3 = (cost != null && R) ? cost + R * 3 : null;
+  const resistance = (d.high20 != null && d.high20 > last) ? d.high20 : null;
+
+  return { R, stop, profit, rMultiple, target2, target3, resistance };
 }
 
 function makeVerdict(d, pnlPct) {
@@ -914,6 +917,15 @@ function makeVerdict(d, pnlPct) {
   const tenkanDead = d.tenkan != null && d.kijun != null && d.tenkan < d.kijun;
   const trendIntact = !belowKijun && !belowCloud;
   const stopTxt = p.stop != null ? `${fmtPrice(p.stop)}円` : '—';
+  const t2 = p.target2 != null ? `${fmtPrice(p.target2)}円` : null;
+  const t3 = p.target3 != null ? `${fmtPrice(p.target3)}円` : null;
+  // 利確の目安を一文にまとめる。上値の節目が目標より手前なら、そこで
+  // 止まりやすいので併記する。
+  const tpTxt = t2
+    ? `利確は${t2}で半分、${t3}で残りが目安`
+      + (p.resistance != null && p.target2 != null && p.resistance < p.target2
+         ? `（ただし${fmtPrice(p.resistance)}円の直近高値で止まりやすい点に注意）` : '')
+    : '';
 
   // ① 損切りライン到達 — スイングでは最優先で機械的に処理する場面
   if (p.stop != null && last <= p.stop) {
@@ -956,23 +968,24 @@ function makeVerdict(d, pnlPct) {
   if (belowKijun) {
     return { color: '#ffd600', label: '🟡 基準線割れ・警戒',
       detail: `基準線 ${fmtPrice(d.kijun)}円 を下回っています。スイングの上昇`
-        + `トレンドが揺らいでおり、${stopTxt} を割ったら撤退の場面です。` };
+        + `トレンドが揺らいでおり、${stopTxt} を割ったら撤退の場面です。`
+        + `${tpTxt ? '持ち直した場合、' + tpTxt + '。' : ''}` };
   }
   // ⑧ 1R 以上の含み益 + トレンド継続 — 利を伸ばす局面
   if (rm != null && rm >= 1 && trendIntact) {
     return { color: '#00e676', label: '🟢 保有継続（利を伸ばす）',
       detail: `トレンドは継続中で含み益は想定リスクの${rm.toFixed(1)}倍です。`
-        + `損切りラインを ${stopTxt} へ引き上げ、${p.target2 != null ? fmtPrice(p.target2) + '円（2R）' : '次の節目'}`
-        + `を目標に利を伸ばす場面です。` };
+        + `損切りラインを ${stopTxt} へ引き上げ、${tpTxt || '次の節目まで利を伸ばす場面'}です。` };
   }
   // ⑨ トレンド継続中だが利益はまだ小さい
   if (trendIntact) {
     return { color: '#00e676', label: '🟢 保有継続',
       detail: `基準線・雲の上を維持しており、上昇スイングは継続中です。`
-        + `${stopTxt} を損切りラインとして保有継続の場面です。` };
+        + `${stopTxt} を損切りラインとして保有継続の場面です。${tpTxt ? tpTxt + '。' : ''}` };
   }
   return { color: '#aaa', label: '⚪ 様子見',
-    detail: `明確なトレンドが出ていません。${stopTxt} を割ったら撤退の構えで。` };
+    detail: `明確なトレンドが出ていません。${stopTxt} を割ったら撤退の構えで。`
+      + `${tpTxt ? '上に行った場合、' + tpTxt + '。' : ''}` };
 }
 
 // ── rendering helpers (mirrors screener.py's card styling) ──────────────
@@ -1041,25 +1054,30 @@ function renderResultCard(r) {
     <div style="color:#ccc;line-height:1.5">${escapeHtml(verdict.detail)}</div>
   </div>`;
 
-  // スイングの建玉管理: 損切りライン・利確目標・現在のR倍数
+  // スイングの建玉管理: 損切りライン・段階的な利確ライン
   const plan = r.cost != null ? swingPlan(d, r.cost) : null;
+  const cell = (label, price, sub, color, bg, border, hit) => `
+      <div style="flex:1;background:${bg};border:1px solid ${border};border-radius:4px;padding:5px 4px">
+        <div style="color:${color};font-size:10px">${label}</div>
+        <div style="color:#e0e0f0;font-weight:600">${price}</div>
+        <div style="color:${hit ? color : '#666'};font-size:10px">${sub}</div>
+      </div>`;
+  const pctFrom = (p) => ((p / d.last - 1) * 100).toFixed(1) + '%';
   const planHtml = (plan && plan.stop != null) ? `
     <div style="display:flex;gap:6px;margin:6px 0;font-size:11px;text-align:center">
-      <div style="flex:1;background:#2a1010;border:1px solid #5e1e1e;border-radius:4px;padding:5px 4px">
-        <div style="color:#ef5350;font-size:10px">損切り</div>
-        <div style="color:#e0e0f0;font-weight:600">${fmtPrice(plan.stop)}</div>
-        <div style="color:#666;font-size:10px">${((plan.stop / d.last - 1) * 100).toFixed(1)}%</div>
-      </div>
-      <div style="flex:1;background:#0e1a2e;border:1px solid #1e3a5e;border-radius:4px;padding:5px 4px">
-        <div style="color:#4499ff;font-size:10px">利確目標 2R</div>
-        <div style="color:#e0e0f0;font-weight:600">${plan.target2 != null ? fmtPrice(plan.target2) : '—'}</div>
-        <div style="color:#666;font-size:10px">${plan.target2 != null ? ((plan.target2 / d.last - 1) * 100).toFixed(1) + '%' : ''}</div>
-      </div>
-      <div style="flex:1;background:#12221a;border:1px solid #1e5e3a;border-radius:4px;padding:5px 4px">
-        <div style="color:#44dd99;font-size:10px">現在</div>
-        <div style="color:#e0e0f0;font-weight:600">${plan.rMultiple != null ? (plan.rMultiple >= 0 ? '+' : '') + plan.rMultiple.toFixed(1) + 'R' : '—'}</div>
-        <div style="color:#666;font-size:10px">1R=${plan.R != null ? fmtPrice(plan.R) : '—'}円</div>
-      </div>
+      ${cell('損切り', fmtPrice(plan.stop), pctFrom(plan.stop), '#ef5350', '#2a1010', '#5e1e1e',
+             d.last <= plan.stop)}
+      ${cell('利確① 半分', plan.target2 != null ? fmtPrice(plan.target2) : '—',
+             plan.target2 != null ? (d.last >= plan.target2 ? '到達' : pctFrom(plan.target2)) : '',
+             '#4499ff', '#0e1a2e', '#1e3a5e', plan.target2 != null && d.last >= plan.target2)}
+      ${cell('利確② 残り', plan.target3 != null ? fmtPrice(plan.target3) : '—',
+             plan.target3 != null ? (d.last >= plan.target3 ? '到達' : pctFrom(plan.target3)) : '',
+             '#44dd99', '#12221a', '#1e5e3a', plan.target3 != null && d.last >= plan.target3)}
+    </div>
+    <div style="font-size:10px;color:#666;margin:-2px 0 6px;line-height:1.6">
+      現在 ${plan.rMultiple != null ? (plan.rMultiple >= 0 ? '+' : '') + plan.rMultiple.toFixed(1) + 'R' : '—'}
+      ／ 1R=${plan.R != null ? fmtPrice(plan.R) : '—'}円（値動きの幅から算出）
+      ${plan.resistance != null ? `／ 上値の節目 ${fmtPrice(plan.resistance)}円（直近20日高値）` : ''}
     </div>` : '';
   const adviceHtml = r.advice
     ? `<div style="font-size:11px;color:#aab8c4;margin-top:6px;padding-top:6px;border-top:1px solid #1a1a3a;line-height:1.6">💬 ${escapeHtml(r.advice)}</div>`
