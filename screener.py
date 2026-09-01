@@ -949,20 +949,28 @@ def build_quote_data(symbol: str, name: str) -> dict | None:
         macd_v, macd_s, macd_h = calc_macd(df["Close"])
         vol_ratio, _ = calc_volume_signal(df)
 
-        # 逆指値推奨: 基準線・雲下限のうち現在値より低い方、無ければ ATR×1.5
+        # スイング判定に使うトレンド構造 (基準線・転換線・雲) とボラティリティ
         lat      = ich.iloc[-1]
         kijun_v  = float(lat["kijun"])  if not pd.isna(lat["kijun"])  else None
+        tenkan_v = float(lat["tenkan"]) if not pd.isna(lat["tenkan"]) else None
         span_a_v = float(lat["span_a"]) if not pd.isna(lat["span_a"]) else None
         span_b_v = float(lat["span_b"]) if not pd.isna(lat["span_b"]) else None
         cloud_bot = (min(span_a_v, span_b_v)
                      if span_a_v is not None and span_b_v is not None else None)
+        cloud_top = (max(span_a_v, span_b_v)
+                     if span_a_v is not None and span_b_v is not None else None)
+
+        atr_v  = calc_atr(df)
+        atr_ok = atr_v if (not pd.isna(atr_v) and atr_v > 0) else None
+        high20 = float(df["High"].iloc[-20:].max()) if len(df) >= 20 else None
+        low20  = float(df["Low"].iloc[-20:].min())  if len(df) >= 20 else None
+
+        # 逆指値推奨: 基準線・雲下限のうち現在値より低い方、無ければ ATR×1.5
         sr_cands = [v for v in [kijun_v, cloud_bot] if v is not None and v < last]
         if sr_cands:
             stop_recommend = min(sr_cands)
         else:
-            atr_v = calc_atr(df)
-            stop_recommend = (last - atr_v * 1.5
-                              if not pd.isna(atr_v) and atr_v > 0 else None)
+            stop_recommend = last - atr_ok * 1.5 if atr_ok else None
 
         def _f(x):
             if x is None or (isinstance(x, float) and pd.isna(x)):
@@ -977,6 +985,10 @@ def build_quote_data(symbol: str, name: str) -> dict | None:
             "macd_v": _f(macd_v), "macd_s": _f(macd_s), "macd_h": _f(macd_h),
             "vol_ratio": _f(vol_ratio), "drawdown": _f(calc_52w_drawdown(df)),
             "stop_recommend": _f(stop_recommend),
+            # スイング判定用
+            "tenkan": _f(tenkan_v), "kijun": _f(kijun_v),
+            "cloud_top": _f(cloud_top), "cloud_bot": _f(cloud_bot),
+            "atr": _f(atr_ok), "high20": _f(high20), "low20": _f(low20),
             "date": _last_date_str(df),
         }
     except Exception as e:

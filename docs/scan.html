@@ -51,7 +51,7 @@ td{padding:3px 4px}
   <div class="logo">kabu-watch</div>
 </div>
 
-<h2>📷 スクショで売り時診断</h2>
+<h2>📷 スクショでスイング売り時診断</h2>
 <div class="card hint">
   SBI証券アプリの「保有証券」画面をスクショして読み込むと、銘柄コードを自動認識します。
   <b>スクショ画像・数量・取得単価は端末（ブラウザ）内だけで処理され、外部には一切送信されません。</b>
@@ -109,8 +109,11 @@ td{padding:3px 4px}
 <div id="results"></div>
 
 <div class="card" style="font-size:10px;color:#555;line-height:1.7">
-  ⚠ 本ツールはテクニカル指標（一目均衡表・RSI・MACD・52週高値比）に基づく機械的な目安を表示するもので、
+  ⚠ 本ツールは<b>数日〜数週間のスイングトレード</b>を前提に、テクニカル指標（一目均衡表・RSI・MACD・ATR）から
+  損切りライン・利確目標を機械的に算出して表示するものです。判断の材料であって、
   投資助言・売買の推奨ではありません。最終的な売買判断はご自身の責任で行ってください。
+  1R は想定リスク幅（ATR×1.5）で、実際に取るべきリスク量はご自身の資金管理ルールに従ってください。
+  指標は日足ベースのため、判定は終値ベースの目安です。
   株価データは Yahoo!ファイナンスの公開情報を利用しており、実際の気配値と差異が生じる場合があります。
 </div>
 
@@ -638,6 +641,9 @@ async function getPrecomputed(symbol) {
     macdH: q.macd_h == null ? NaN : q.macd_h,
     volRatio: q.vol_ratio, drawdown: q.drawdown == null ? NaN : q.drawdown,
     stopRecommend: q.stop_recommend,
+    tenkan: q.tenkan, kijun: q.kijun,
+    cloudTop: q.cloud_top, cloudBot: q.cloud_bot,
+    atr: q.atr, high20: q.high20, low20: q.low20,
     asOf: q.date || (j && j.generated_at) || '',
     name: q.name || '',
   };
@@ -857,35 +863,105 @@ function makeAdviceComment(d) {
   return parts.slice(0, 2).join("。") + "。";
 }
 
-// ── sell-timing verdict (new: personalizes the above with cost basis) ───
+// ── スイングトレード基準の売り時判定 ────────────────────────────────────
+// 数日〜数週間の保有を前提に、
+//   ・損切りライン (トレンドが崩れた price)
+//   ・利確目標 (リスク R の倍数)
+//   ・トレンド継続かどうか (基準線・雲との位置関係)
+// を具体的な価格で示す。R = 想定リスク幅で、スイングの標準的な損切り幅
+// である ATR(14)×1.5 を使う。ATR が無い銘柄は取得単価の5%で代用する。
+
+function swingPlan(d, cost) {
+  const last = d.last;
+  const atr = (d.atr != null && d.atr > 0) ? d.atr : null;
+  const R = atr ? atr * 1.5 : (cost ? cost * 0.05 : null);
+
+  // 損切りライン: 基準線・雲下限ベース。無い場合のみ ATR で代用する。
+  // 現在値がすでにこの水準を割っていても引き下げてはいけない。割れたこと
+  // 自体が撤退シグナルなので、ここで下にずらすと検知できなくなる。
+  const stop = (d.stopRecommend != null && d.stopRecommend > 0)
+    ? d.stopRecommend
+    : (R ? last - R : null);
+
+  const profit = (cost != null && cost > 0) ? last - cost : null;
+  const rMultiple = (profit != null && R) ? profit / R : null;
+  return {
+    R, stop, profit, rMultiple,
+    target2: (cost != null && R) ? cost + R * 2 : null,
+    target3: (cost != null && R) ? cost + R * 3 : null,
+  };
+}
+
 function makeVerdict(d, pnlPct) {
-  const rsi = d.rsi, macdH = d.macdH, sigs = d.sigs || {};
-  if (d.stopRecommend != null && !isNaN(d.stopRecommend) && d.last <= d.stopRecommend) {
-    return {
-      color: '#ef5350', label: '🔴 損切りライン到達の目安',
-      detail: `現在値が逆指値目安 ${fmtPrice(d.stopRecommend)}円 を下回っています。損切りルールの実行を検討してください。`,
-    };
+  const cost = (pnlPct != null && d.last) ? d.last / (1 + pnlPct / 100) : null;
+  const p = swingPlan(d, cost);
+  const last = d.last, rsi = d.rsi, macdH = d.macdH;
+  const rm = p.rMultiple;
+
+  const belowCloud = d.cloudBot != null && last < d.cloudBot;
+  const belowKijun = d.kijun != null && last < d.kijun;
+  const tenkanDead = d.tenkan != null && d.kijun != null && d.tenkan < d.kijun;
+  const trendIntact = !belowKijun && !belowCloud;
+  const stopTxt = p.stop != null ? `${fmtPrice(p.stop)}円` : '—';
+
+  // ① 損切りライン到達 — スイングでは最優先で機械的に処理する場面
+  if (p.stop != null && last <= p.stop) {
+    return { color: '#ef5350', label: '🔴 損切りライン到達',
+      detail: `現在値が損切りライン ${stopTxt} に到達しています。スイングでは`
+        + `ここで機械的に撤退し、次の仕掛けに資金を回すのが基本です。` };
   }
-  if (pnlPct != null && pnlPct > 0 && (rsi >= 75 || (!isNaN(macdH) && macdH < 0 && !sigs["上昇トレンド"] && !sigs["三役好転"]))) {
-    const reason = rsi >= 75 ? `RSI ${rsi.toFixed(0)} の過熱圏` : 'MACDの勢い鈍化';
-    return {
-      color: '#ff9944', label: '🟠 利益確定を検討',
-      detail: `含み益 +${pnlPct.toFixed(1)}% の状態で${reason}が見られます。一部利益確定も選択肢です。`,
-    };
+  // ② 雲を割った = 上昇スイングの前提が崩壊
+  if (belowCloud) {
+    return { color: '#ef5350', label: '🔴 トレンド崩れ・撤退検討',
+      detail: `雲の下限 ${fmtPrice(d.cloudBot)}円 を割り込み、上昇スイングの前提が`
+        + `崩れています。反発を待つより一度撤退する場面です。` };
   }
-  if (sigs["三役好転"] || (sigs["雲抜け"] && sigs["上昇トレンド"])) {
-    return {
-      color: '#00e676', label: '🟢 上昇トレンド継続中',
-      detail: '一目均衡表は強気シグナルが継続中です。トレンドに沿った保有継続も選択肢です。',
-    };
+  // ③ 3R 到達 — 利を伸ばしきった水準
+  if (rm != null && rm >= 3) {
+    return { color: '#ff9944', label: '🟠 利確目標到達（3R）',
+      detail: `想定リスクの3倍の利益に到達しています（+${p.profit.toFixed(0)}円/株）。`
+        + `スイングの利を伸ばしきった水準で、全部または大半の利確を検討する場面です。` };
   }
-  if (pnlPct != null && pnlPct <= -8) {
-    return {
-      color: '#ffd600', label: '🟡 含み損が拡大中',
-      detail: `含み損 ${pnlPct.toFixed(1)}% です。逆指値ラインの見直しをおすすめします。`,
-    };
+  // ④ 2R + モメンタム鈍化 — 伸びが止まったら利を確定
+  if (rm != null && rm >= 2 && (rsi >= 70 || (!isNaN(macdH) && macdH < 0))) {
+    const why = rsi >= 70 ? `RSI ${rsi.toFixed(0)} の過熱` : 'MACDの勢い鈍化';
+    return { color: '#ff9944', label: '🟠 一部利確を検討（2R到達）',
+      detail: `想定リスクの2倍に到達し、${why}が出ています。半分利確して残りは`
+        + `損切りラインを ${stopTxt} へ引き上げる形が定石です。` };
   }
-  return { color: '#aaa', label: '⚪ 様子見', detail: '明確な売買シグナルは出ていません。' };
+  // ⑤ 過熱 — R 未達でも短期の反落リスク
+  if (rsi >= 75 && p.profit != null && p.profit > 0) {
+    return { color: '#ff9944', label: '🟠 短期過熱・利確検討',
+      detail: `RSI ${rsi.toFixed(0)} と過熱圏です。スイングでは伸びきったところを`
+        + `利確し、押し目を待って入り直す方が効率的な場面です。` };
+  }
+  // ⑥ 転換線デッドクロス — スイングの手仕舞いサイン
+  if (tenkanDead && p.profit != null && p.profit > 0) {
+    return { color: '#ffd600', label: '🟡 勢い減速・手仕舞い準備',
+      detail: `転換線が基準線を下回り、短期の勢いが落ちています。`
+        + `損切りラインを ${stopTxt} へ引き上げ、割ったら撤退の構えを。` };
+  }
+  // ⑦ 基準線割れ — トレンド継続の前提が揺らいでいる
+  if (belowKijun) {
+    return { color: '#ffd600', label: '🟡 基準線割れ・警戒',
+      detail: `基準線 ${fmtPrice(d.kijun)}円 を下回っています。スイングの上昇`
+        + `トレンドが揺らいでおり、${stopTxt} を割ったら撤退の場面です。` };
+  }
+  // ⑧ 1R 以上の含み益 + トレンド継続 — 利を伸ばす局面
+  if (rm != null && rm >= 1 && trendIntact) {
+    return { color: '#00e676', label: '🟢 保有継続（利を伸ばす）',
+      detail: `トレンドは継続中で含み益は想定リスクの${rm.toFixed(1)}倍です。`
+        + `損切りラインを ${stopTxt} へ引き上げ、${p.target2 != null ? fmtPrice(p.target2) + '円（2R）' : '次の節目'}`
+        + `を目標に利を伸ばす場面です。` };
+  }
+  // ⑨ トレンド継続中だが利益はまだ小さい
+  if (trendIntact) {
+    return { color: '#00e676', label: '🟢 保有継続',
+      detail: `基準線・雲の上を維持しており、上昇スイングは継続中です。`
+        + `${stopTxt} を損切りラインとして保有継続の場面です。` };
+  }
+  return { color: '#aaa', label: '⚪ 様子見',
+    detail: `明確なトレンドが出ていません。${stopTxt} を割ったら撤退の構えで。` };
 }
 
 // ── rendering helpers (mirrors screener.py's card styling) ──────────────
@@ -948,18 +1024,32 @@ function renderResultCard(r) {
   const d = r.d, pnl = r.pnlPct;
   const pc = pnl == null ? '#aaa' : pctColor(pnl);
   const ps = pnl != null && pnl >= 0 ? '+' : '';
-  const stopHtml = (d.stopRecommend != null && !isNaN(d.stopRecommend) && d.stopRecommend > 0 && d.stopRecommend < d.last)
-    ? `<div style="background:#0e1a2e;border:1px solid #1e3a5e;border-radius:4px;padding:5px 8px;margin:4px 0;font-size:11px">
-         <span style="color:#4499ff">⊙ 逆指値目安</span>
-         <span style="color:#e0e0f0;font-weight:600">${fmtPrice(d.stopRecommend)}</span>円
-         <span style="color:#26a69a">(${((d.stopRecommend / d.last - 1) * 100).toFixed(1)}%)</span>
-         <span style="color:#555;font-size:10px">　基準線・雲下限の低い方</span>
-       </div>` : '';
   const verdict = r.verdict;
   const verdictHtml = `<div style="background:#161628;border:1px solid ${verdict.color};border-radius:6px;padding:8px 10px;margin:8px 0;font-size:12px">
     <div style="color:${verdict.color};font-weight:700;margin-bottom:3px">${verdict.label}</div>
     <div style="color:#ccc;line-height:1.5">${escapeHtml(verdict.detail)}</div>
   </div>`;
+
+  // スイングの建玉管理: 損切りライン・利確目標・現在のR倍数
+  const plan = r.cost != null ? swingPlan(d, r.cost) : null;
+  const planHtml = (plan && plan.stop != null) ? `
+    <div style="display:flex;gap:6px;margin:6px 0;font-size:11px;text-align:center">
+      <div style="flex:1;background:#2a1010;border:1px solid #5e1e1e;border-radius:4px;padding:5px 4px">
+        <div style="color:#ef5350;font-size:10px">損切り</div>
+        <div style="color:#e0e0f0;font-weight:600">${fmtPrice(plan.stop)}</div>
+        <div style="color:#666;font-size:10px">${((plan.stop / d.last - 1) * 100).toFixed(1)}%</div>
+      </div>
+      <div style="flex:1;background:#0e1a2e;border:1px solid #1e3a5e;border-radius:4px;padding:5px 4px">
+        <div style="color:#4499ff;font-size:10px">利確目標 2R</div>
+        <div style="color:#e0e0f0;font-weight:600">${plan.target2 != null ? fmtPrice(plan.target2) : '—'}</div>
+        <div style="color:#666;font-size:10px">${plan.target2 != null ? ((plan.target2 / d.last - 1) * 100).toFixed(1) + '%' : ''}</div>
+      </div>
+      <div style="flex:1;background:#12221a;border:1px solid #1e5e3a;border-radius:4px;padding:5px 4px">
+        <div style="color:#44dd99;font-size:10px">現在</div>
+        <div style="color:#e0e0f0;font-weight:600">${plan.rMultiple != null ? (plan.rMultiple >= 0 ? '+' : '') + plan.rMultiple.toFixed(1) + 'R' : '—'}</div>
+        <div style="color:#666;font-size:10px">1R=${plan.R != null ? fmtPrice(plan.R) : '—'}円</div>
+      </div>
+    </div>` : '';
   const adviceHtml = r.advice
     ? `<div style="font-size:11px;color:#aab8c4;margin-top:6px;padding-top:6px;border-top:1px solid #1a1a3a;line-height:1.6">💬 ${escapeHtml(r.advice)}</div>`
     : '';
@@ -982,7 +1072,7 @@ function renderResultCard(r) {
       ／ 指標: ${escapeHtml(d.asOf || '--')}の日足
     </div>
     <div style="margin-bottom:6px">${signalBadges(d.sigs)}</div>
-    ${stopHtml}
+    ${planHtml}
     ${statsRow(d.rsi, d.macdV, d.macdS, d.macdH, d.drawdown, d.volRatio)}
     ${verdictHtml}
     ${adviceHtml}
