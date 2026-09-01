@@ -229,21 +229,26 @@ function mergeParsedRows(parsed) {
     const existing = state.rows.find((r) => r.code === p.code);
     if (existing) {
       if (!existing.name && p.name) existing.name = p.name;
-      if ((existing.qty === '' || existing.qty == null) && p.qty != null) {
+      // 空欄なら埋める。加えて、損益率で検算済みの値(derived)は、
+      // 別の画像から拾った確度の低い値より優先して上書きする。
+      const better = p.derived && !existing.derived;
+      const isEmpty = (v) => v === '' || v == null;
+      if (p.qty != null && (isEmpty(existing.qty) || better)) {
         existing.qty = p.qty;
         existing.guess = true;
       }
-      if ((existing.cost === '' || existing.cost == null) && p.cost != null) {
+      if (p.cost != null && (isEmpty(existing.cost) || better)) {
         existing.cost = p.cost;
         existing.guess = true;
       }
+      if (p.derived) existing.derived = true;
       if (existing.last == null && p.last != null) existing.last = p.last;
     } else {
       added++;
       state.rows.push({
         code: p.code, name: p.name,
         qty: p.qty ?? '', cost: p.cost ?? '',
-        last: p.last ?? null,
+        last: p.last ?? null, derived: !!p.derived,
         guess: p.qty != null || p.cost != null,
       });
     }
@@ -350,9 +355,11 @@ function cleanName(line) {
 // 数量は画面に無いが、評価損益 ÷ (現在値 − 取得単価) で復元できる。
 // さらに評価損益率と突き合わせて、読み取りが正しいか検算する。
 
-/** 「〜円」の形で現れる数値を、符号付きで順番に取り出す。 */
+/** 「〜円」の形で現れる数値を、符号付きで順番に取り出す。
+ *  OCR は桁の途中に空白を入れることがある (「2,813.0」→「2,81 3.0」) ため、
+ *  数字が空白を挟んで続く場合は1つの数値として繋げて読む。 */
 function numbersBeforeYen(line) {
-  const re = /([+\-−–—±]?)\s*([0-9０-９][0-9０-９.,]*)\s*円/g;
+  const re = /([+\-−–—±]?)\s*([0-9０-９][0-9０-９.,]*(?:\s+[0-9０-９][0-9０-９.,]*)*)\s*円/g;
   const out = [];
   let m;
   while ((m = re.exec(line))) {
@@ -410,7 +417,11 @@ function parseSbiHoldings(text) {
 
     // 現在値もそのまま返す。事前計算データは前営業日の終値なので、
     // スクショに写っている「今の株価」の方が損益計算には正確。
-    results.push({ code, name: cleanName(prev), qty, cost, last, plRate: rate });
+    // derived は「損益率で検算済み / 評価損益から逆算」した確度の高い値である印。
+    results.push({
+      code, name: cleanName(prev), qty, cost, last, plRate: rate,
+      derived: cost != null && qty != null,
+    });
   }
   return results;
 }
