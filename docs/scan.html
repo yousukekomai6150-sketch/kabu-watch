@@ -906,7 +906,31 @@ function swingPlan(d, cost) {
   return { R, stop, profit, rMultiple, target2, target3, resistance };
 }
 
+/** 利確ラインを一文にまとめる。到達済みかどうかで言い方を変える。 */
+function takeProfitSentence(p, last) {
+  if (p.target2 == null || p.target3 == null) return '';
+  const t2 = fmtPrice(p.target2), t3 = fmtPrice(p.target3);
+  if (last >= p.target3) return `利確② ${t3}円 は到達済みです`;
+  if (last >= p.target2) return `利確① ${t2}円 は到達済み。次の利確目安は ${t3}円 です`;
+  let s = `利確の目安は ${t2}円 で半分、${t3}円 で残り`;
+  // 上値の節目が目標より手前なら、そこで止まりやすいので添える
+  if (p.resistance != null && p.resistance < p.target2) {
+    s += `（${fmtPrice(p.resistance)}円 の直近高値で止まりやすい点に注意）`;
+  }
+  return s;
+}
+
+// 判定はここで選び、利確ラインの文言は makeVerdict が全判定に一律で足す。
+// 判定ごとに個別に書き足すと、銘柄によって利確価格が出たり出なかったりする。
 function makeVerdict(d, pnlPct) {
+  const cost = (pnlPct != null && d.last) ? d.last / (1 + pnlPct / 100) : null;
+  const v = pickVerdict(d, pnlPct);
+  if (v.exit || cost == null) return v;
+  const s = takeProfitSentence(swingPlan(d, cost), d.last);
+  return s ? { ...v, detail: `${v.detail}${s}。` } : v;
+}
+
+function pickVerdict(d, pnlPct) {
   const cost = (pnlPct != null && d.last) ? d.last / (1 + pnlPct / 100) : null;
   const p = swingPlan(d, cost);
   const last = d.last, rsi = d.rsi, macdH = d.macdH;
@@ -917,25 +941,17 @@ function makeVerdict(d, pnlPct) {
   const tenkanDead = d.tenkan != null && d.kijun != null && d.tenkan < d.kijun;
   const trendIntact = !belowKijun && !belowCloud;
   const stopTxt = p.stop != null ? `${fmtPrice(p.stop)}円` : '—';
-  const t2 = p.target2 != null ? `${fmtPrice(p.target2)}円` : null;
-  const t3 = p.target3 != null ? `${fmtPrice(p.target3)}円` : null;
-  // 利確の目安を一文にまとめる。上値の節目が目標より手前なら、そこで
-  // 止まりやすいので併記する。
-  const tpTxt = t2
-    ? `利確は${t2}で半分、${t3}で残りが目安`
-      + (p.resistance != null && p.target2 != null && p.resistance < p.target2
-         ? `（ただし${fmtPrice(p.resistance)}円の直近高値で止まりやすい点に注意）` : '')
-    : '';
 
   // ① 損切りライン到達 — スイングでは最優先で機械的に処理する場面
+  // exit: 撤退を促す判定に利確価格を足すと指示が矛盾するため付けない
   if (p.stop != null && last <= p.stop) {
-    return { color: '#ef5350', label: '🔴 損切りライン到達',
+    return { color: '#ef5350', label: '🔴 損切りライン到達', exit: true,
       detail: `現在値が損切りライン ${stopTxt} に到達しています。スイングでは`
         + `ここで機械的に撤退し、次の仕掛けに資金を回すのが基本です。` };
   }
   // ② 雲を割った = 上昇スイングの前提が崩壊
   if (belowCloud) {
-    return { color: '#ef5350', label: '🔴 トレンド崩れ・撤退検討',
+    return { color: '#ef5350', label: '🔴 トレンド崩れ・撤退検討', exit: true,
       detail: `雲の下限 ${fmtPrice(d.cloudBot)}円 を割り込み、上昇スイングの前提が`
         + `崩れています。反発を待つより一度撤退する場面です。` };
   }
@@ -968,24 +984,22 @@ function makeVerdict(d, pnlPct) {
   if (belowKijun) {
     return { color: '#ffd600', label: '🟡 基準線割れ・警戒',
       detail: `基準線 ${fmtPrice(d.kijun)}円 を下回っています。スイングの上昇`
-        + `トレンドが揺らいでおり、${stopTxt} を割ったら撤退の場面です。`
-        + `${tpTxt ? '持ち直した場合、' + tpTxt + '。' : ''}` };
+        + `トレンドが揺らいでおり、${stopTxt} を割ったら撤退の場面です。` };
   }
   // ⑧ 1R 以上の含み益 + トレンド継続 — 利を伸ばす局面
   if (rm != null && rm >= 1 && trendIntact) {
     return { color: '#00e676', label: '🟢 保有継続（利を伸ばす）',
       detail: `トレンドは継続中で含み益は想定リスクの${rm.toFixed(1)}倍です。`
-        + `損切りラインを ${stopTxt} へ引き上げ、${tpTxt || '次の節目まで利を伸ばす場面'}です。` };
+        + `損切りラインを ${stopTxt} へ引き上げて利を伸ばす場面です。` };
   }
   // ⑨ トレンド継続中だが利益はまだ小さい
   if (trendIntact) {
     return { color: '#00e676', label: '🟢 保有継続',
       detail: `基準線・雲の上を維持しており、上昇スイングは継続中です。`
-        + `${stopTxt} を損切りラインとして保有継続の場面です。${tpTxt ? tpTxt + '。' : ''}` };
+        + `${stopTxt} を損切りラインとして保有継続の場面です。` };
   }
   return { color: '#aaa', label: '⚪ 様子見',
-    detail: `明確なトレンドが出ていません。${stopTxt} を割ったら撤退の構えで。`
-      + `${tpTxt ? '上に行った場合、' + tpTxt + '。' : ''}` };
+    detail: `明確なトレンドが出ていません。${stopTxt} を割ったら撤退の構えで。` };
 }
 
 // ── rendering helpers (mirrors screener.py's card styling) ──────────────
