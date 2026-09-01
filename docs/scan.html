@@ -234,11 +234,13 @@ function mergeParsedRows(parsed) {
         existing.cost = p.cost;
         existing.guess = true;
       }
+      if (existing.last == null && p.last != null) existing.last = p.last;
     } else {
       added++;
       state.rows.push({
         code: p.code, name: p.name,
         qty: p.qty ?? '', cost: p.cost ?? '',
+        last: p.last ?? null,
         guess: p.qty != null || p.cost != null,
       });
     }
@@ -403,7 +405,9 @@ function parseSbiHoldings(text) {
       if (q > 0 && q < 1e9 && Math.abs(q - Math.round(q)) < 0.02) qty = Math.round(q);
     }
 
-    results.push({ code, name: cleanName(prev), qty, cost });
+    // 現在値もそのまま返す。事前計算データは前営業日の終値なので、
+    // スクショに写っている「今の株価」の方が損益計算には正確。
+    results.push({ code, name: cleanName(prev), qty, cost, last, plRate: rate });
   }
   return results;
 }
@@ -971,6 +975,12 @@ function renderResultCard(r) {
     <div style="font-size:11px;color:#666;margin-bottom:4px">
       取得 ${r.cost != null ? fmtPrice(r.cost) : '--'} 円${r.qty != null ? `　${r.qty}株` : ''}
     </div>
+    <div style="font-size:10px;color:#555;margin-bottom:6px">
+      ${r.priceSource === 'ocr'
+        ? '株価: スクショの現在値'
+        : '株価: ' + escapeHtml(d.asOf || '前営業日') + 'の終値'}
+      ／ 指標: ${escapeHtml(d.asOf || '--')}の日足
+    </div>
     <div style="margin-bottom:6px">${signalBadges(d.sigs)}</div>
     ${stopHtml}
     ${statsRow(d.rsi, d.macdV, d.macdS, d.macdH, d.drawdown, d.volRatio)}
@@ -989,13 +999,21 @@ async function analyzeHolding(row) {
   try {
     const pre = await getPrecomputed(symbol);
     if (pre) {
-      const pnlPct = cost ? (pre.last / cost - 1) * 100 : null;
+      // 事前計算データは前営業日の終値。場中はスクショに写っている現在値の
+      // 方が新しいので、桁違いでなければそちらを採用する。テクニカル指標は
+      // 日足の履歴が必要なため事前計算データのまま使う。
+      const ocrLast = row.last != null && row.last > 0 ? Number(row.last) : null;
+      const useOcr = ocrLast != null && pre.last > 0
+        && Math.abs(ocrLast / pre.last - 1) < 0.3;
+      const d = { ...pre, last: useOcr ? ocrLast : pre.last };
+      const pnlPct = cost ? (d.last / cost - 1) * 100 : null;
       return {
         // 銘柄コードから引いた正式名称を優先する。OCRの読み取り名
         // (「0 M」など)より確実なため。
-        ...row, symbol, cost, qty, error: false, d: pre, pnlPct,
+        ...row, symbol, cost, qty, error: false, d, pnlPct,
         name: pre.name || row.name,
-        verdict: makeVerdict(pre, pnlPct), advice: makeAdviceComment(pre),
+        priceSource: useOcr ? 'ocr' : 'ref',
+        verdict: makeVerdict(d, pnlPct), advice: makeAdviceComment(d),
       };
     }
   } catch (e) { /* 事前計算データが無ければ下のライブ取得に進む */ }
