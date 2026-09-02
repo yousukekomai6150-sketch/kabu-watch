@@ -945,60 +945,60 @@ function pickVerdict(d, pnlPct) {
   // ① 損切りライン到達 — スイングでは最優先で機械的に処理する場面
   // exit: 撤退を促す判定に利確価格を足すと指示が矛盾するため付けない
   if (p.stop != null && last <= p.stop) {
-    return { color: '#ef5350', label: '🔴 損切りライン到達', exit: true,
+    return { color: '#ef5350', label: '🔴 損切りライン到達', exit: true, act: 'sell_all',
       detail: `現在値が損切りライン ${stopTxt} に到達しています。スイングでは`
         + `ここで機械的に撤退し、次の仕掛けに資金を回すのが基本です。` };
   }
   // ② 雲を割った = 上昇スイングの前提が崩壊
   if (belowCloud) {
-    return { color: '#ef5350', label: '🔴 トレンド崩れ・撤退検討', exit: true,
+    return { color: '#ef5350', label: '🔴 トレンド崩れ・撤退検討', exit: true, act: 'sell_all',
       detail: `雲の下限 ${fmtPrice(d.cloudBot)}円 を割り込み、上昇スイングの前提が`
         + `崩れています。反発を待つより一度撤退する場面です。` };
   }
   // ③ 3R 到達 — 利を伸ばしきった水準
   if (rm != null && rm >= 3) {
-    return { color: '#ff9944', label: '🟠 利確目標到達（3R）',
+    return { color: '#ff9944', label: '🟠 利確目標到達（3R）', act: 'sell_all',
       detail: `想定リスクの3倍の利益に到達しています（+${p.profit.toFixed(0)}円/株）。`
         + `スイングの利を伸ばしきった水準で、全部または大半の利確を検討する場面です。` };
   }
   // ④ 2R + モメンタム鈍化 — 伸びが止まったら利を確定
   if (rm != null && rm >= 2 && (rsi >= 70 || (!isNaN(macdH) && macdH < 0))) {
     const why = rsi >= 70 ? `RSI ${rsi.toFixed(0)} の過熱` : 'MACDの勢い鈍化';
-    return { color: '#ff9944', label: '🟠 一部利確を検討（2R到達）',
+    return { color: '#ff9944', label: '🟠 一部利確を検討（2R到達）', act: 'sell_half',
       detail: `想定リスクの2倍に到達し、${why}が出ています。半分利確して残りは`
         + `損切りラインを ${stopTxt} へ引き上げる形が定石です。` };
   }
   // ⑤ 過熱 — R 未達でも短期の反落リスク
   if (rsi >= 75 && p.profit != null && p.profit > 0) {
-    return { color: '#ff9944', label: '🟠 短期過熱・利確検討',
+    return { color: '#ff9944', label: '🟠 短期過熱・利確検討', act: 'sell_half',
       detail: `RSI ${rsi.toFixed(0)} と過熱圏です。スイングでは伸びきったところを`
         + `利確し、押し目を待って入り直す方が効率的な場面です。` };
   }
   // ⑥ 転換線デッドクロス — スイングの手仕舞いサイン
   if (tenkanDead && p.profit != null && p.profit > 0) {
-    return { color: '#ffd600', label: '🟡 勢い減速・手仕舞い準備',
+    return { color: '#ffd600', label: '🟡 勢い減速・手仕舞い準備', act: 'hold',
       detail: `転換線が基準線を下回り、短期の勢いが落ちています。`
         + `損切りラインを ${stopTxt} へ引き上げ、割ったら撤退の構えを。` };
   }
   // ⑦ 基準線割れ — トレンド継続の前提が揺らいでいる
   if (belowKijun) {
-    return { color: '#ffd600', label: '🟡 基準線割れ・警戒',
+    return { color: '#ffd600', label: '🟡 基準線割れ・警戒', act: 'hold',
       detail: `基準線 ${fmtPrice(d.kijun)}円 を下回っています。スイングの上昇`
         + `トレンドが揺らいでおり、${stopTxt} を割ったら撤退の場面です。` };
   }
   // ⑧ 1R 以上の含み益 + トレンド継続 — 利を伸ばす局面
   if (rm != null && rm >= 1 && trendIntact) {
-    return { color: '#00e676', label: '🟢 保有継続（利を伸ばす）',
+    return { color: '#00e676', label: '🟢 保有継続（利を伸ばす）', act: 'hold',
       detail: `トレンドは継続中で含み益は想定リスクの${rm.toFixed(1)}倍です。`
         + `損切りラインを ${stopTxt} へ引き上げて利を伸ばす場面です。` };
   }
   // ⑨ トレンド継続中だが利益はまだ小さい
   if (trendIntact) {
-    return { color: '#00e676', label: '🟢 保有継続',
+    return { color: '#00e676', label: '🟢 保有継続', act: 'hold',
       detail: `基準線・雲の上を維持しており、上昇スイングは継続中です。`
         + `${stopTxt} を損切りラインとして保有継続の場面です。` };
   }
-  return { color: '#aaa', label: '⚪ 様子見',
+  return { color: '#aaa', label: '⚪ 様子見', act: 'hold',
     detail: `明確なトレンドが出ていません。${stopTxt} を割ったら撤退の構えで。` };
 }
 
@@ -1049,6 +1049,73 @@ function statsRow(rsi, macdV, macdS, macdH, drawdown, volRatio) {
   return `<div style="display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:#666;margin:5px 0 7px;border-top:1px solid #1a1a3a;padding-top:5px">${parts.join(' ')}</div>`;
 }
 
+/**
+ * 「いくらで何株売るか」を注文の形で書き出す。価格だけでは実際に何を
+ * すればよいか分からないため、株数と損益額、取得単価からの騰落率を添える。
+ */
+function actionPlanHtml(r, d, plan) {
+  if (!plan || r.cost == null || plan.stop == null) return '';
+  const cost = Number(r.cost);
+  const qtyRaw = (r.qty !== '' && r.qty != null) ? Number(r.qty) : null;
+  const qty = (qtyRaw != null && qtyRaw > 0) ? Math.round(qtyRaw) : null;
+
+  const yen = (v) => (v >= 0 ? '+' : '−') + Math.abs(Math.round(v)).toLocaleString('en-US') + '円';
+  const fromCost = (p) => {
+    const v = (p / cost - 1) * 100;
+    return `取得比 ${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
+  };
+  const pnlAt = (p, n) => (n != null ? `　→　${yen((p - cost) * n)}` : '');
+  const sharesTxt = (n) => (n != null ? `${n}株` : '保有分');
+
+  const half = qty != null ? Math.floor(qty / 2) : null;
+  const rest = qty != null ? qty - half : null;
+
+  const row = (mark, color, text) =>
+    `<div style="display:flex;gap:6px;margin:3px 0;line-height:1.6">
+       <span style="color:${color};flex-shrink:0">${mark}</span><span>${text}</span></div>`;
+
+  let lines = '';
+  if (r.verdict.act === 'sell_all') {
+    lines += row('▶', '#ef5350',
+      `<b>いま ${fmtPrice(d.last)}円 で ${sharesTxt(qty)} すべて売る</b>`
+      + `（${fromCost(d.last)}）${pnlAt(d.last, qty)}`);
+    lines += row('・', '#666', '成行、または現在値近くの指値で。トレンドが戻るまで待たない。');
+  } else if (r.verdict.act === 'sell_half') {
+    lines += row('▶', '#ff9944',
+      `<b>いま ${fmtPrice(d.last)}円 で ${sharesTxt(half)} 売る</b>`
+      + `（${fromCost(d.last)}）${pnlAt(d.last, half)}`);
+    if (plan.target3 != null) {
+      lines += row('・', '#44dd99',
+        `残り ${sharesTxt(rest)} は ${fmtPrice(plan.target3)}円 で利確`
+        + `（${fromCost(plan.target3)}）${pnlAt(plan.target3, rest)}`);
+    }
+    lines += row('・', '#ef5350',
+      `残りの損切りは ${fmtPrice(plan.stop)}円`
+      + `（${fromCost(plan.stop)}）${pnlAt(plan.stop, rest)}`);
+  } else {
+    lines += row('▶', '#00e676', '<b>いまは売らずに保有継続</b>');
+    lines += row('・', '#ef5350',
+      `<b>${fmtPrice(plan.stop)}円 まで下がったら ${sharesTxt(qty)} 売る</b>`
+      + `（${fromCost(plan.stop)}）${pnlAt(plan.stop, qty)}　※逆指値を入れておく`);
+    if (plan.target2 != null) {
+      lines += row('・', '#4499ff',
+        `${fmtPrice(plan.target2)}円 まで上がったら ${sharesTxt(half)} 売る`
+        + `（${fromCost(plan.target2)}）${pnlAt(plan.target2, half)}`);
+    }
+    if (plan.target3 != null) {
+      lines += row('・', '#44dd99',
+        `${fmtPrice(plan.target3)}円 で残り ${sharesTxt(rest)} を売る`
+        + `（${fromCost(plan.target3)}）${pnlAt(plan.target3, rest)}`);
+    }
+  }
+
+  return `<div style="background:#0d0d1a;border:1px solid #24243c;border-radius:6px;
+      padding:8px 10px;margin:6px 0;font-size:11px;color:#ccc">
+      <div style="color:#888;font-size:10px;margin-bottom:4px">📋 具体的な売り方</div>
+      ${lines}
+    </div>`;
+}
+
 function renderResultCard(r) {
   if (r.error) {
     return `<div class="card">
@@ -1076,7 +1143,13 @@ function renderResultCard(r) {
         <div style="color:#e0e0f0;font-weight:600">${price}</div>
         <div style="color:${hit ? color : '#666'};font-size:10px">${sub}</div>
       </div>`;
-  const pctFrom = (p) => ((p / d.last - 1) * 100).toFixed(1) + '%';
+  // 率は取得単価基準で出す。「取得から何%で切るか」がスイングの判断軸で、
+  // 現在値からの乖離だと株価が動くたびに基準がずれて分かりにくい。
+  const pctFrom = (p) => {
+    if (r.cost == null) return ((p / d.last - 1) * 100).toFixed(1) + '%';
+    const v = (p / r.cost - 1) * 100;
+    return `取得比 ${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
+  };
   const planHtml = (plan && plan.stop != null) ? `
     <div style="display:flex;gap:6px;margin:6px 0;font-size:11px;text-align:center">
       ${cell('損切り', fmtPrice(plan.stop), pctFrom(plan.stop), '#ef5350', '#2a1010', '#5e1e1e',
@@ -1118,6 +1191,7 @@ function renderResultCard(r) {
     ${planHtml}
     ${statsRow(d.rsi, d.macdV, d.macdS, d.macdH, d.drawdown, d.volRatio)}
     ${verdictHtml}
+    ${actionPlanHtml(r, d, plan)}
     ${adviceHtml}
   </div>`;
 }
