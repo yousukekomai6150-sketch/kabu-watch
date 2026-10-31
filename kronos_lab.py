@@ -461,7 +461,8 @@ def make_fan_chart(uid: str, hist: pd.DataFrame, closes: np.ndarray, c0: float, 
     nh, hz = len(hist), closes.shape[1]
     L, R, T, B = 4, 44, 8, 16
     pw, ph = w - L - R, h - T - B
-    sw = pw / (nh + hz)
+    fk = max(1.0, nh * 0.45 / hz)  # 予報部分の1日を過去の日足より広く取り、シナリオの広がりを見やすくする
+    sw = pw / (nh + hz * fk)
     q = np.percentile(closes, [5, 10, 50, 90, 95], axis=0)
     lo = min(float(hist["low"].min()), float(q[0].min()))
     hi = max(float(hist["high"].max()), float(q[4].max()))
@@ -472,7 +473,10 @@ def make_fan_chart(uid: str, hist: pd.DataFrame, closes: np.ndarray, c0: float, 
     lo, hi = lo - pad, hi + pad
 
     def X(i: float) -> float:
-        return L + (i + 0.5) * sw
+        """i < nh: 過去の日足、i >= nh: 予報（i - nh 日目）"""
+        if i < nh:
+            return L + (i + 0.5) * sw
+        return L + nh * sw + (i - nh + 1) * fk * sw - sw / 2
 
     def Y(p: float) -> float:
         return T + (hi - p) / (hi - lo) * ph
