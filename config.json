@@ -29,6 +29,17 @@
   ],
   "max_candidates": 10,
   "max_price": 5000,
+  "_kronos_note": "Kronos 検証ラボ（kronos_lab.py / docs/kronos.html）の設定。universe に挙げたリストの銘柄を毎日予測して答え合わせする。",
+  "kronos": {
+    "model": "NeoQuasar/Kronos-small",
+    "tokenizer": "NeoQuasar/Kronos-Tokenizer-base",
+    "universe": ["holdings", "candidates", "tick_candidates", "scan_universe"],
+    "lookback": 400,
+    "horizon": 5,
+    "sample_count": 5,
+    "min_days_for_verdict": 20,
+    "line_weekly": true
+  },
   "_scan_universe_note": "docs/scan.html がスクショから読み取った銘柄を診断できるよう、ここに載せた銘柄は quotes.json に事前計算される。保有銘柄が増えたら追記する。",
   "scan_universe": [
     {"symbol": "7013.T", "name": "IHI"},
