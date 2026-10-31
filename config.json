@@ -29,14 +29,16 @@
   ],
   "max_candidates": 10,
   "max_price": 5000,
-  "_kronos_note": "Kronos 検証ラボ（kronos_lab.py / docs/kronos.html）の設定。universe に挙げたリストの銘柄を毎日予測して答え合わせする。",
+  "_kronos_note": "Kronos 検証ラボ（kronos_lab.py / docs/kronos.html）の設定。universe に挙げたリストの銘柄を毎日予測して答え合わせする。holdings の銘柄は holding_paths 通りのシナリオで予報チャートを描く（逆指値は stop_loss、未設定なら取得単価の stop_rule_pct%）。",
   "kronos": {
     "model": "NeoQuasar/Kronos-small",
     "tokenizer": "NeoQuasar/Kronos-Tokenizer-base",
     "universe": ["holdings", "candidates", "tick_candidates", "scan_universe"],
     "lookback": 400,
     "horizon": 5,
-    "sample_count": 5,
+    "sample_count": 20,
+    "holding_paths": 100,
+    "stop_rule_pct": -8,
     "min_days_for_verdict": 20,
     "line_weekly": true
   },
