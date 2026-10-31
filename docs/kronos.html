@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kronos 検証ラボ | kabu-watch</title>
+<meta name="theme-color" content="#080812">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#080812;color:#e0e0f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  max-width:480px;margin:0 auto;padding:12px;font-size:13px;line-height:1.5}
+a{color:#7c83ff;text-decoration:none}
+h2{font-size:13px;letter-spacing:.08em;color:#666;margin:16px 0 8px}
+.card{background:#10101e;border:1px solid #22223a;border-radius:8px;padding:10px 12px;margin-bottom:10px}
+.ct{font-size:12px;color:#aab;font-weight:600;margin-bottom:6px}
+.vd{border:1px solid;border-radius:6px;padding:6px 8px;font-weight:700;font-size:14px;margin-bottom:8px}
+.t{width:100%;border-collapse:collapse;font-size:12px}
+.t th{color:#667;font-weight:500;text-align:left;padding:3px 0;border-bottom:1px solid #22223a}
+.t td{padding:4px 0;border-bottom:1px solid #16162a;vertical-align:top}
+.pt{table-layout:fixed} .pt th:first-child{width:40%}
+.r{text-align:right} .b{font-weight:700}
+.ci{color:#667;font-size:10px;font-weight:400}
+.sym{color:#556;font-size:10px}
+.mute{color:#667;font-size:11px}
+.warn{background:#1a0505;border:1px solid #cc2200;border-radius:4px;padding:6px 10px;margin-bottom:8px;font-size:11px;color:#ff5533}
+.info{background:#0d0d24;border:1px solid #2a2a55;border-radius:4px;padding:6px 10px;margin-bottom:10px;font-size:11px;color:#99a}
+details summary{cursor:pointer;color:#7c83ff;font-size:12px;margin-top:8px}
+details .t{margin-top:6px}
+.foot li{margin:2px 0 2px 16px}
+</style>
+</head>
+<body>
+<div style="display:flex;justify-content:space-between;align-items:flex-start;padding:4px 0 10px">
+  <div>
+    <div style="font-size:20px;font-weight:800;color:#7c83ff">🔮 Kronos 検証ラボ</div>
+    <a href="index.html" style="font-size:11px">← ダッシュボードへ</a>
+  </div>
+  <div style="font-size:10px;color:#555;text-align:right">更新: 10/31 16:54 JST</div>
+</div>
+<div class="info">ローソク足AI「Kronos」が本当に当たるかを確かめる実験です。<b>予測を売買判断に使わないでください。</b>
+答え合わせが20営業日分たまると判定が出ます（5日後の判定は予測から5営業日遅れ）。</div>
+
+<h2>成績</h2>
+<div class="card">
+<div class="ct">5営業日後（メイン）</div>
+<div class="vd" style="color:#888;border-color:#888">データ収集中（判定まであと20営業日）</div>
+<div class="mute">まだ答え合わせできた予測がありません</div>
+</div>
+<div class="card">
+<div class="ct">翌営業日</div>
+<div class="vd" style="color:#888;border-color:#888">データ収集中（判定まであと20営業日）</div>
+<div class="mute">まだ答え合わせできた予測がありません</div>
+</div>
+
+<h2>最新の予測</h2>
+<div class="card mute">まだ予測がありません（平日17:20 JSTに自動実行）</div>
+<h2>仕組み</h2>
+<div class="card foot mute">
+<ul>
+<li>モデル: NeoQuasar/Kronos-small（HF 不明）／ソース: shiyu-coder/Kronos @不明</li>
+<li>入力: 日足400本（Yahoo Finance）。5回サンプリングして平均</li>
+<li>的中率: 予測した向き（上/下）と実際の向きが一致した割合</li>
+<li>RankIC: 銘柄間で「予測の順位」と「実際の順位」がどれだけ一致したか（0なら無関係）</li>
+<li>判定: 「Kronos − 単純予想の良い方」と RankIC の95%区間がどちらも0より上なら「有望」</li>
+<li>5日後の評価は期間が重なるため、誤差幅を√5倍に広げて慎重に判定</li>
+<li>1か月程度では大きな差しか見分けられません。3か月たまると精度が上がります</li>
+</ul>
+</div>
+<div style="text-align:center;font-size:10px;color:#333;padding:16px 0 8px">
+  自動実行: 平日 17:20 JST | <a href="https://github.com/yousukekomai6150-sketch/kabu-watch" style="color:#444">GitHub</a>
+</div>
+</body>
+</html>

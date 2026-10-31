@@ -40,5 +40,7 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "chore: update screener $(TZ=Asia/Tokyo date +'%Y-%m-%d %H:%M JST')"
+            # Kronos Lab のコミットと重なっても失敗しないよう、取り込んでから push
+            git pull --rebase -q || true
             git push
           fi

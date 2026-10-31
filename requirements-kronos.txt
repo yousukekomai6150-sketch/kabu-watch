@@ -1,0 +1,8 @@
+# Kronos 検証ラボ（kronos_lab.py）専用の追加依存。
+# PyTorch は workflow で CPU 版（torch==2.5.1）を別途インストールする。
+# Kronos 本体のソースは workflow が固定コミットで取得する（.github/workflows/kronos.yml）。
+einops==0.8.1
+huggingface_hub==0.33.1
+safetensors==0.6.2
+tqdm==4.67.1
+jpholiday==1.0.3

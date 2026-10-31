@@ -1524,7 +1524,8 @@ if('serviceWorker' in navigator){{
 <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0 10px">
   <div>
     <div style="font-size:20px;font-weight:800;color:#7c83ff">kabu-watch</div>
-    <a href="scan.html" style="font-size:11px;color:#7c83ff;text-decoration:none">📷 スクショで売り時診断 →</a>
+    <a href="scan.html" style="font-size:11px;color:#7c83ff;text-decoration:none">📷 スクショで売り時診断 →</a><br>
+    <a href="kronos.html" style="font-size:11px;color:#7c83ff;text-decoration:none">🔮 Kronos 検証ラボ →</a>
   </div>
   <div style="text-align:right">
     <div style="font-size:10px;color:#555;line-height:1.5">{header_note}</div>
